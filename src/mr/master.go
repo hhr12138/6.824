@@ -110,22 +110,32 @@ func (m *Master) StateCheck() {
 			if m.FinishMapTaskCnt == m.MapTaskCnt {
 				//处理reduce任务, 删除重复的, 次时ReduceTask中一定已经包含了所有需要的reduce任务
 				reduceCnt := 0
-				reduceTask := make(chan *Task, len(m.ReduceTask[0]))
+				reduceTask := make(chan *Task, m.nReduce)
 				reduceTaskCheck := make(map[int]bool)
+				taskChange := make(map[int][]string)
 			loop:
 				for {
 					select {
 					case task := <-m.ReduceTask[0]:
 						if !reduceTaskCheck[task.Id] {
 							reduceTaskCheck[task.Id] = true
-							reduceCnt++
-							reduceTask <- task
+							taskChange[task.ReduceId] = append(taskChange[task.ReduceId], task.FileName)
 						} else {
 							fmt.Println("task: " + strconv.Itoa(task.Id) + "already, filename=" + task.FileName)
 						}
 					default:
 						break loop
 					}
+				}
+				for reduceId, reduceFiles := range taskChange {
+					task := &Task{
+						MapTask:  false,
+						Id:       m.nMap + reduceId,
+						ReduceId: reduceId,
+						Files:    reduceFiles,
+					}
+					reduceCnt++
+					reduceTask <- task
 				}
 				//进入reduce任务处理状态, ReduceTask[0]中可能还有重复任务, 但reduceTaskCnt一定没问题
 				m.ReduceTaskCnt = reduceCnt
@@ -137,6 +147,7 @@ func (m *Master) StateCheck() {
 	}
 }
 
+//用来生成一个临时id, 记录一个临时任务是否被多次处理
 func (m *Master) GetTaskId(mapId int, reduceId int) int {
 	//防止reduceId和MapId重复,MapId范围为0~nMap, reduceId范围为nMap+5~...
 	return mapId*m.nReduce + reduceId + m.nMap
@@ -196,21 +207,17 @@ func (m *Master) statisticsWords() {
 		if m.FinishReduceCheck[reduceTaskAck.Id] {
 			continue
 		} else {
-			for _, kv := range reduceTaskAck.WordCounts {
-				v, _ := strconv.Atoi(kv.Value)
-				m.WordCounts[kv.Key] += v
-			}
 			m.FinishReduceCheck[reduceTaskAck.Id] = true
+
+			file, _ := os.OpenFile("mr-out-0", os.O_CREATE, os.ModePerm)
+			for _, kv := range reduceTaskAck.WordCounts {
+				file.WriteString(fmt.Sprintf("%v %v\n", kv.Key, kv.Value))
+			}
+			file.Close()
 			m.FinishReduceTaskCnt++
-			//写入文件, 然后修改状态
 			if m.FinishReduceTaskCnt == m.ReduceTaskCnt {
-				file, _ := os.Create("mr-out-0")
-				for key, value := range m.WordCounts {
-					str := fmt.Sprintf("%v %v", key, value)
-					file.WriteString(str + "\n")
-				}
-				file.Close()
 				m.finish <- true
+				return
 			}
 		}
 	}
@@ -238,15 +245,15 @@ func (m *Master) Ping(args *ExampleArgs, reply *ExampleReply) error {
 	if args.Free {
 		taskChan := m.ReduceTask[0]
 		secondChan := m.ReduceTask[1]
-		//taskCnt := m.ReduceTaskCnt
-		//finishTaskCnt := m.FinishReduceTaskCnt
+		taskCnt := m.ReduceTaskCnt
+		finishTaskCnt := m.FinishReduceTaskCnt
 		//map任务阶段
 		taskState, ok := m.State.Load("state")
 		if !ok || !taskState.(bool) {
 			taskChan = m.MapTask[0]
 			secondChan = m.MapTask[1]
-			//taskCnt = m.MapTaskCnt
-			//finishTaskCnt = m.FinishMapTaskCnt
+			taskCnt = m.MapTaskCnt
+			finishTaskCnt = m.FinishMapTaskCnt
 		}
 		select {
 		case task := <-taskChan:
@@ -254,8 +261,8 @@ func (m *Master) Ping(args *ExampleArgs, reply *ExampleReply) error {
 			reply.Task = task
 		default:
 		}
-		//if !reply.HasTask && float64(finishTaskCnt)/float64(taskCnt) >= RETRY_RATE {
-		if !reply.HasTask {
+		if !reply.HasTask && float64(finishTaskCnt)/float64(taskCnt) >= RETRY_RATE {
+			//if !reply.HasTask {
 		loop:
 			for {
 				select {

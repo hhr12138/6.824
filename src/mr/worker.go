@@ -144,32 +144,32 @@ func (s *Servant) MapFunc(task *Task, mapf func(string, string) []KeyValue) (*Ma
 		fmt.Printf("read file err: %v\n", err)
 		return nil, err
 	}
-	reduceValue := make([][]string, task.NReduce)
+	reduceValue := make([][]KeyValue, task.NReduce)
 	content := string(bs)
 	keyValue := mapf(fileName, content)
 	for _, kv := range keyValue {
 		key := kv.Key
 		reduceId := ihash(key) % task.NReduce
-		reduceValue[reduceId] = append(reduceValue[reduceId], key)
+		reduceValue[reduceId] = append(reduceValue[reduceId], kv)
 	}
 	reduceFiles := make([]string, task.NReduce)
 	_, err = os.Stat(DIR_PATH)
 	if os.IsNotExist(err) {
-		err = os.MkdirAll(DIR_PATH, os.ModeDir)
+		err = os.MkdirAll(DIR_PATH, os.ModePerm)
 		if err != nil {
 			fmt.Printf("creat dir fail: err = %v\n", err.Error())
 			return nil, err
 		}
 	}
-	for idx, keys := range reduceValue {
+	for idx, kvs := range reduceValue {
 		file, err := ioutil.TempFile(DIR_PATH, "*.txt")
 		if err != nil {
 			fmt.Printf("create file err: %v\n", err.Error())
 			return nil, err
 		}
 		enc := json.NewEncoder(file)
-		for _, key := range keys {
-			enc.Encode(key)
+		for _, kv := range kvs {
+			enc.Encode(kv)
 		}
 		reduceFiles[idx] = file.Name()
 		file.Close()
@@ -185,27 +185,29 @@ func (s *Servant) MapFunc(task *Task, mapf func(string, string) []KeyValue) (*Ma
 func (s *Servant) ReduceFunc(task *Task, reducef func(string, []string) string) (*ReduceTaskAck, error) {
 	id := task.Id
 	reduceId := task.ReduceId
-	fileName := task.FileName
-	file, err := os.Open(DIR_PATH + fileName)
-	if err != nil {
-		fmt.Printf("open file err: %v\n", err.Error())
-		return nil, err
-	}
-	doc := json.NewDecoder(file)
-	mp := make(map[string]int, 0)
-	for {
-		var key string
-		err = doc.Decode(&key)
+	mp := make(map[string][]string, 0)
+	for _, fileName := range task.Files {
+		file, err := os.Open(DIR_PATH + fileName)
 		if err != nil {
-			break
+			fmt.Printf("open file err: %v\n", err.Error())
+			return nil, err
 		}
-		mp[key]++
+		doc := json.NewDecoder(file)
+		for {
+			var kv KeyValue
+			err = doc.Decode(&kv)
+			if err != nil {
+				break
+			}
+			mp[kv.Key] = append(mp[kv.Key], kv.Value)
+		}
 	}
 	kv := make([]KeyValue, 0)
-	for key, value := range mp {
+	for key, strs := range mp {
+		value := reducef(key, strs)
 		keyVale := KeyValue{
 			Key:   key,
-			Value: strconv.Itoa(value),
+			Value: value,
 		}
 		kv = append(kv, keyVale)
 	}
