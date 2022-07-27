@@ -15,15 +15,16 @@ import "strconv"
 //
 
 type ExampleArgs struct {
-	X int
+	IpPort string `json:"ip_port"` //servant的唯一标识
+	Free   bool   `json:"free"`    //是否空闲
 }
 
 type ExampleReply struct {
-	Y int
+	HasTask bool  `json:"has_task"` //是否有任务
+	Task    *Task `json:"task"`
 }
 
 // Add your RPC definitions here.
-
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the master.
