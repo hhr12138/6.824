@@ -157,11 +157,14 @@ func (m *Master) MapAck(args *MapTaskAck, reply *bool) error {
 	m.FinishTask.Store(args.Id, true)
 	for reduceId, file := range args.ReduceFiles {
 		id := m.getTaskId(args.MapId, reduceId)
+		fileName := fmt.Sprintf("mr-%v-%v", args.MapId, reduceId)
+		os.Rename(DIR_PATH+file, DIR_PATH+fileName)
 		task := &Task{
 			MapTask:  false,
 			Id:       id,
 			ReduceId: reduceId,
-			FileName: file,
+			FileName: fileName,
+			NReduce:  m.nReduce,
 		}
 		m.ReduceTask[0] <- task
 	}

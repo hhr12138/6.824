@@ -5,6 +5,7 @@ const (
 	HEART_TIME = 10   //ms
 	HEART_CNT  = 5
 	CHECK_TIME = 5 //ms 检测任务时间
+	DIR_PATH   = "../files/"
 )
 
 type Task struct {
@@ -13,4 +14,5 @@ type Task struct {
 	MapId    int    `json:"map_id,omitempty"`
 	ReduceId int    `json:"reduce_id,omitempty"`
 	FileName string `json:"file_name"` //该任务读取的文件名
+	NReduce  int    `json:"n_reduce"`  //reduce数目
 }

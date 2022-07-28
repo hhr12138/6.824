@@ -1,7 +1,9 @@
 package mr
 
 import (
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"strconv"
 	"time"
@@ -115,21 +117,98 @@ func Worker(mapf func(string, string) []KeyValue,
 			}
 			//写到这里了, 继续吧
 			if task.MapTask {
-				MapFunc()
+				mapTaskAck, err := servant.MapFunc(task, mapf)
+				if err != nil {
+					continue
+				}
+				var ans *bool
+				call("Master.MapAck", mapTaskAck, ans)
 			} else {
-				ReduceFunc()
+				reduceTaskAck := servant.ReduceFunc(task, reducef)
+				var ans *bool
+				call("Master.ReduceAck", reduceTaskAck, ans)
 			}
 		default:
 		}
 	}
 }
 
-func MapFunc() {
-
+func (s *Servant) MapFunc(task *Task, mapf func(string, string) []KeyValue) (*MapTaskAck, error) {
+	id := task.Id
+	mapId := task.MapId
+	fileName := task.FileName
+	bs, err := os.ReadFile(fileName)
+	if err != nil {
+		fmt.Errorf("read file err: %v", err)
+		return nil, err
+	}
+	reduceValue := make([][]string, task.NReduce)
+	content := string(bs)
+	keyValue := mapf(fileName, content)
+	for _, kv := range keyValue {
+		key := kv.Key
+		reduceId := ihash(key) % task.NReduce
+		reduceValue[reduceId] = append(reduceValue[reduceId], key)
+	}
+	reduceFiles := make([]string, task.NReduce)
+	_, err = os.Stat(DIR_PATH)
+	if os.IsNotExist(err) {
+		os.Create(DIR_PATH)
+	}
+	for idx, keys := range reduceValue {
+		file, err := ioutil.TempFile(DIR_PATH, "*.txt")
+		if err != nil {
+			fmt.Errorf("create file err: %v", err)
+			return nil, err
+		}
+		enc := json.NewEncoder(file)
+		for key := range keys {
+			enc.Encode(key)
+		}
+		reduceFiles[idx] = file.Name()
+		file.Close()
+	}
+	ans := &MapTaskAck{
+		Id:          id,
+		MapId:       mapId,
+		ReduceFiles: reduceFiles,
+	}
+	return ans, nil
 }
 
-func ReduceFunc() {
+func (s *Servant) ReduceFunc(task *Task, reducef func(string, []string) string) *ReduceTaskAck {
+	id := task.Id
+	reduceId := task.ReduceId
+	fileName := task.FileName
+	file, err := os.Open(fileName)
+	if err != nil {
+		fmt.Errorf("open file err: %v", err)
+	}
+	doc := json.NewDecoder(file)
+	mp := make(map[string]int, 0)
+	for {
+		var key string
+		err = doc.Decode(key)
+		if err != nil {
+			break
+		}
+		mp[key]++
+	}
+	kv := make([]KeyValue, 0)
+	for key, value := range mp {
+		keyVale := KeyValue{
+			Key:   key,
+			Value: strconv.Itoa(value),
+		}
+		kv = append(kv, keyVale)
+	}
 
+	reduceTaskAck := &ReduceTaskAck{
+		ReduceId:   reduceId,
+		Id:         id,
+		WordCounts: kv,
+	}
+	return reduceTaskAck
 }
 
 //
