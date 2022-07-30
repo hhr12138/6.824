@@ -1,6 +1,8 @@
 package mr
 
 import (
+	"io/ioutil"
+	"strings"
 	"testing"
 	"time"
 )
@@ -8,13 +10,20 @@ import (
 var master *Master
 
 func init() {
-	master = MakeMaster([]string{}, 10)
+	files := make([]string, 0)
+	path := "../main/"
+	dir, _ := ioutil.ReadDir(path)
+	for _, file := range dir {
+		if !file.IsDir() && strings.Index(file.Name(), "pg") >= 0 {
+			files = append(files, path+file.Name())
+		}
+	}
+	master = MakeMaster(files, 10)
 }
 
 func TestPing(t *testing.T) {
 
 	//空闲无任务
-	master.MapTaskCnt = 10
 	args := &ExampleArgs{
 		Free:   true,
 		IpPort: "82.156.8.118:8080",
@@ -45,5 +54,31 @@ func TestDone(t *testing.T) {
 	for !master.Done() {
 		//fmt.Println(time.Now())
 		time.Sleep(time.Second)
+	}
+}
+
+////在RealloTask上打个断点一起测了
+//func TestMaster_HeartCheck(t *testing.T) {
+//	servantName := "1234"
+//	args := &ExampleArgs{
+//		Free:   true,
+//		IpPort: servantName,
+//	}
+//	reply := &ExampleReply{}
+//	currentTime := time.Now().UnixNano()/1000
+//	master.SaveServant = append(master.SaveServant, servantName)
+//	master.WorkHeartTime.Store(servantName,currentTime)
+//	master.HeartCheck()
+//	time.Sleep(time.Second)
+//	master.HeartCheck()
+//	master.Ping(args,reply)
+//	master.HeartCheck()
+//}
+
+func TestMaster(t *testing.T) {
+	for range time.Tick(time.Second) {
+		if master.Done() {
+			break
+		}
 	}
 }

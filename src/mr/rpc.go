@@ -36,6 +36,10 @@ type ReduceTaskAck struct {
 	WordCounts []KeyValue `json:"word_counts"` //key为单词, value为次数
 }
 
+type AckReply struct {
+	Success bool `json:"success"`
+}
+
 // Add your RPC definitions here.
 
 // Cook up a unique-ish UNIX-domain socket name

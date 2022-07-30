@@ -2,7 +2,7 @@ package mr
 
 const (
 	RETRY_RATE = 0.75 //比例
-	HEART_TIME = 10   //ms
+	HEART_TIME = 100  //ms
 	HEART_CNT  = 5
 	CHECK_TIME = 5 //ms 检测任务时间
 	DIR_PATH   = "../files/"

@@ -49,12 +49,7 @@ func (s *Servant) Done() bool {
 }
 
 func (s *Servant) Ping() (*ExampleReply, bool) {
-	free := false
-	select {
-	case <-s.Free:
-		free = true
-	default:
-	}
+	free := len(s.Free) != 0
 	args := &ExampleArgs{
 		IpPort: s.IPPort,
 		Free:   free,
@@ -91,7 +86,9 @@ func Worker(mapf func(string, string) []KeyValue,
 	//定时心跳
 	go func() {
 		for range time.Tick(time.Millisecond * HEART_TIME) {
+			//fmt.Printf("ping\n")
 			reply, ok := servant.Ping()
+			//fmt.Printf("ok\n")
 			//没ping通master, 简单认为master已经结束任务, 退出
 			if !ok {
 				servant.finish <- true
@@ -118,16 +115,21 @@ func Worker(mapf func(string, string) []KeyValue,
 			//写到这里了, 继续吧
 			if task.MapTask {
 				mapTaskAck, err := servant.MapFunc(task, mapf)
-				if err != nil {
-					continue
+				if err == nil {
+					ans := &AckReply{}
+					call("Master.MapAck", mapTaskAck, ans)
 				}
-				var ans *bool
-				call("Master.MapAck", mapTaskAck, ans)
 			} else {
-				reduceTaskAck := servant.ReduceFunc(task, reducef)
-				var ans *bool
-				call("Master.ReduceAck", reduceTaskAck, ans)
+				reduceTaskAck, err := servant.ReduceFunc(task, reducef)
+				if err == nil {
+					ans := &AckReply{}
+					call("Master.ReduceAck", reduceTaskAck, ans)
+				}
 			}
+			//必须写到这里, 如果写下面会出现, 心跳线程刚刚拿到任务修改free状态后该线程又给他该回去, 导致错误获取多个任务的情况, 只有处理完任务(无论成功失败)才能算空闲
+			//信号量机制保证, 信号量为1
+			//也许把请求任务和心跳机制解耦可以不用处理这部分.
+			servant.Free <- true
 		default:
 		}
 	}
@@ -139,7 +141,7 @@ func (s *Servant) MapFunc(task *Task, mapf func(string, string) []KeyValue) (*Ma
 	fileName := task.FileName
 	bs, err := os.ReadFile(fileName)
 	if err != nil {
-		fmt.Errorf("read file err: %v", err)
+		fmt.Printf("read file err: %v\n", err)
 		return nil, err
 	}
 	reduceValue := make([][]string, task.NReduce)
@@ -153,16 +155,20 @@ func (s *Servant) MapFunc(task *Task, mapf func(string, string) []KeyValue) (*Ma
 	reduceFiles := make([]string, task.NReduce)
 	_, err = os.Stat(DIR_PATH)
 	if os.IsNotExist(err) {
-		os.Create(DIR_PATH)
+		err = os.MkdirAll(DIR_PATH, os.ModeDir)
+		if err != nil {
+			fmt.Printf("creat dir fail: err = %v\n", err.Error())
+			return nil, err
+		}
 	}
 	for idx, keys := range reduceValue {
 		file, err := ioutil.TempFile(DIR_PATH, "*.txt")
 		if err != nil {
-			fmt.Errorf("create file err: %v", err)
+			fmt.Printf("create file err: %v\n", err.Error())
 			return nil, err
 		}
 		enc := json.NewEncoder(file)
-		for key := range keys {
+		for _, key := range keys {
 			enc.Encode(key)
 		}
 		reduceFiles[idx] = file.Name()
@@ -176,19 +182,20 @@ func (s *Servant) MapFunc(task *Task, mapf func(string, string) []KeyValue) (*Ma
 	return ans, nil
 }
 
-func (s *Servant) ReduceFunc(task *Task, reducef func(string, []string) string) *ReduceTaskAck {
+func (s *Servant) ReduceFunc(task *Task, reducef func(string, []string) string) (*ReduceTaskAck, error) {
 	id := task.Id
 	reduceId := task.ReduceId
 	fileName := task.FileName
-	file, err := os.Open(fileName)
+	file, err := os.Open(DIR_PATH + fileName)
 	if err != nil {
-		fmt.Errorf("open file err: %v", err)
+		fmt.Printf("open file err: %v\n", err.Error())
+		return nil, err
 	}
 	doc := json.NewDecoder(file)
 	mp := make(map[string]int, 0)
 	for {
 		var key string
-		err = doc.Decode(key)
+		err = doc.Decode(&key)
 		if err != nil {
 			break
 		}
@@ -208,7 +215,7 @@ func (s *Servant) ReduceFunc(task *Task, reducef func(string, []string) string) 
 		Id:         id,
 		WordCounts: kv,
 	}
-	return reduceTaskAck
+	return reduceTaskAck, nil
 }
 
 //
