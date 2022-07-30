@@ -3,14 +3,14 @@ package mr
 import (
 	"fmt"
 	"log"
+	"net"
+	"net/http"
+	"net/rpc"
 	"os"
 	"strconv"
 	"sync"
 	"time"
 )
-import "net"
-import "net/rpc"
-import "net/http"
 
 type Master struct {
 	nReduce             int                   `json:"n_reduce"`               //reduce任务数
@@ -209,11 +209,15 @@ func (m *Master) statisticsWords() {
 		} else {
 			m.FinishReduceCheck[reduceTaskAck.Id] = true
 
-			file, _ := os.OpenFile("mr-out-0", os.O_CREATE, os.ModePerm)
+			file, _ := os.OpenFile("mr-out-0", os.O_CREATE|os.O_RDWR|os.O_APPEND, os.ModePerm)
 			for _, kv := range reduceTaskAck.WordCounts {
-				file.WriteString(fmt.Sprintf("%v %v\n", kv.Key, kv.Value))
+				_, err := file.WriteString(fmt.Sprintf("%v %v\n", kv.Key, kv.Value))
+				if err != nil {
+					fmt.Printf("write err=%v\n", err)
+				}
 			}
 			file.Close()
+			fmt.Println("task" + strconv.Itoa(reduceTaskAck.Id) + " done")
 			m.FinishReduceTaskCnt++
 			if m.FinishReduceTaskCnt == m.ReduceTaskCnt {
 				m.finish <- true
