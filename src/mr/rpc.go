@@ -15,15 +15,32 @@ import "strconv"
 //
 
 type ExampleArgs struct {
-	X int
+	IpPort string `json:"ip_port"` //servant的唯一标识
+	Free   bool   `json:"free"`    //是否空闲
 }
 
 type ExampleReply struct {
-	Y int
+	HasTask bool  `json:"has_task"` //是否有任务
+	Task    *Task `json:"task"`
+}
+
+type MapTaskAck struct {
+	Id          int      `json:"id"`
+	MapId       int      `json:"map_id"`
+	ReduceFiles []string `json:"reduce_files"` //reduce_id到filename的映射, 用来请求master
+}
+
+type ReduceTaskAck struct {
+	Id         int        `json:"id"`
+	ReduceId   int        `json:"reduce_id"`
+	WordCounts []KeyValue `json:"word_counts"` //key为单词, value为次数
+}
+
+type AckReply struct {
+	Success bool `json:"success"`
 }
 
 // Add your RPC definitions here.
-
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the master.
