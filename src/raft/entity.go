@@ -1,10 +1,11 @@
 package raft
 
 const (
-	HEART_TIME  = 200 //ms
-	TIMEOUT_CNT = 5   //超时次数
-	BUFFER_SIZE = 100 //缓冲AppendEntries数目
-	SLEEP_TIME  = 50  //没新AppendEntries时短暂睡眠会, ms
+	HEART_TIME       = 160 //ms
+	TIMEOUT_CNT      = 5   //超时次数
+	BUFFER_SIZE      = 100 //缓冲AppendEntries数目
+	SLEEP_TIME       = 50  //没新AppendEntries时短暂睡眠会, ms
+	VOTE_REPLACE_CNT       //选举超时最大重试次数
 )
 
 type AppendEntriesArgs struct {

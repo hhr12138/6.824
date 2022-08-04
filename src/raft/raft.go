@@ -19,7 +19,6 @@ package raft
 
 import (
 	"encoding/json"
-	"fmt"
 	"math/rand"
 	"sync"
 	"time"
@@ -120,7 +119,7 @@ func (rf *Raft) StartVote(term, index int, endTime int64, lastLog *Log) {
 		}
 	}()
 	for i := 0; i < len(rf.peers); i++ {
-		idx := i
+		//idx := i
 		if i == rf.me {
 			continue
 		}
@@ -134,14 +133,17 @@ func (rf *Raft) StartVote(term, index int, endTime int64, lastLog *Log) {
 			}
 			reply := &RequestVoteReply{}
 			ok := false
-			for !ok {
-				MyPrintf(rf.me, term, index, "[StartVote] start call %v", idx)
+			for idx := 0; idx < VOTE_REPLACE_CNT; idx++ {
+				//MyPrintf(rf.me, term, index, "[StartVote] start call %v", idx)
 				//RPC超时就不停重试
 				ok = peer.Call("Raft.RequestVote", args, reply)
-				if !ok {
-					MyPrintf(rf.me, term, index, "[StartVote] call %v rpc timeout", idx)
-				} else {
-					MyPrintf(rf.me, term, index, "[StartVote] call %v success", idx)
+				//if !ok {
+				//	MyPrintf(rf.me, term, index, "[StartVote] call %v rpc timeout", idx)
+				//} else {
+				//	MyPrintf(rf.me, term, index, "[StartVote] call %v success", idx)
+				//}
+				if ok {
+					break
 				}
 			}
 			//必须用这种写法, 不然携程会阻塞导致积压一堆
@@ -179,7 +181,7 @@ func (rf *Raft) StartVote(term, index int, endTime int64, lastLog *Log) {
 						rf.rwMu.Unlock()
 						return
 					}
-					commitIndex := rf.state.CommitIndex
+					//commitIndex := rf.state.CommitIndex
 					nextIndex := len(rf.state.Logs)
 					nextIndexs := make([]int, len(rf.peers))
 					for i := 0; i < len(nextIndexs); i++ {
@@ -187,7 +189,11 @@ func (rf *Raft) StartVote(term, index int, endTime int64, lastLog *Log) {
 					}
 					matchIndex := make([]int, len(rf.peers))
 					for i := 0; i < len(matchIndex); i++ {
-						matchIndex[i] = commitIndex
+						//这里本来是更新成rf.state.CommitIndex的, 但有这种情况
+						//5个集群, 死了俩
+						//3个不停更新commitIndex->极大的数, 然后重新选主把5个的MatchIndex全部更新了
+						//然后死了的俩活了, 之后给了他们错误的leaderCommit, 然后G了
+						matchIndex[i] = -1
 					}
 					rf.state.MatchIndex = matchIndex
 					rf.state.NextIndex = nextIndexs
@@ -252,7 +258,7 @@ func (rf *Raft) heartCheck() {
 				rf.state.VotedFor = rf.me
 				rf.state.Identity = 2
 				lastLog := rf.state.Logs[len(rf.state.Logs)-1]
-				MyPrintf(rf.me, term, index, "[heartCheck], update identity=candidate, update voteTimeout=%v", nextVoteTimeout)
+				//MyPrintf(rf.me, term, index, "[heartCheck], update identity=candidate, update voteTimeout=%v", nextVoteTimeout)
 				rf.rwMu.Unlock()
 				go rf.StartVote(term+1, index, nextVoteTimeout, lastLog)
 			}
@@ -347,17 +353,17 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	index := len(rf.state.Logs) - 1
 	log := rf.state.Logs[index]
 	died := rf.killed()
-	replyMsg := ""
-	MyPrintf(rf.me, term, index, "get rpc request from %v", args.CandidateId)
-	defer func() {
-		argBs, _ := json.Marshal(args)
-		replyBs, _ := json.Marshal(reply)
-		MyPrintf(rf.me, term, index, "return rpc request,args=%v,reply=%v,replyMsg=%v", string(argBs), string(replyBs), replyMsg)
-	}()
+	//replyMsg := ""
+	//MyPrintf(rf.me, term, index, "get rpc request from %v", args.CandidateId)
+	//defer func() {
+	//	argBs, _ := json.Marshal(args)
+	//	replyBs, _ := json.Marshal(reply)
+	//	MyPrintf(rf.me, term, index, "return rpc request,args=%v,reply=%v,replyMsg=%v", string(argBs), string(replyBs), replyMsg)
+	//}()
 	//死亡或者任期更高, 回复false
 	if died || args.Term < term {
 		reply.Success = false
-		replyMsg = fmt.Sprintf("dead=%v,term=%v", died, term)
+		//replyMsg = fmt.Sprintf("dead=%v,term=%v", died, term)
 		return
 	}
 	//任期较小, 更新任期
@@ -371,7 +377,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 	//由candidate保证只会对每个follower要一次选票, 这里加rf.state.VotedFor != args.CandidateId的原因是方式回复丢失在网络中
 	if rf.state.VotedFor != -1 && rf.state.VotedFor != args.CandidateId {
-		replyMsg = fmt.Sprintf("votefor=%v", rf.state.VotedFor)
+		//replyMsg = fmt.Sprintf("votefor=%v", rf.state.VotedFor)
 		reply.Success = false
 		return
 	}
@@ -387,7 +393,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.state.VotedFor = args.CandidateId
 		MyPrintf(rf.me, term, index, "[RequestVote] votefor %v", args.CandidateId)
 	} else {
-		replyMsg = fmt.Sprintf("log fail, lastTerm=%v,lastIndex=%v", log.Term, log.Index)
+		//replyMsg = fmt.Sprintf("log fail, lastTerm=%v,lastIndex=%v", log.Term, log.Index)
 	}
 	reply.Success = success
 	return
@@ -676,12 +682,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			logs, _ := json.Marshal(args.Logs)
 			plog := rf.state.Logs[args.PrevLogIndex]
 			prevLog, _ := json.Marshal(plog)
+			argBs, _ := json.Marshal(args)
 			if log.Index != i || log.Index != applyMsg.CommandIndex {
 				applyBs, _ := json.Marshal(applyMsg)
 				logBs, _ := json.Marshal(log)
-				MyPrintf(rf.me, currentTerm, currentIndex, "[appendentries] index err, applymsg := %v, log := %v, i = %v", applyBs, logBs, i)
+				MyPrintf(rf.me, currentTerm, currentIndex, "[appendentries] index err, applymsg := %v, log := %v, i = %v", string(applyBs), string(logBs), i)
 			}
-			MyPrintf(rf.me, currentTerm, currentIndex, "[AppendEntries] apply msg %v, command=%v, msgTerm=%v, nowLog=%v,lastIndex=%v,lastTerm=%v,prevLog=%v", applyMsg.CommandIndex, applyMsg.Command, rf.state.Logs[i].Term, string(logs), args.PrevLogIndex, args.PrevLogTerm, string(prevLog))
+			MyPrintf(rf.me, currentTerm, currentIndex, "[AppendEntries] apply msg %v, command=%v, msgTerm=%v, nowLog=%v,lastIndex=%v,lastTerm=%v,prevLog=%v, args=%v", applyMsg.CommandIndex, applyMsg.Command, rf.state.Logs[i].Term, string(logs), args.PrevLogIndex, args.PrevLogTerm, string(prevLog), string(argBs))
 			rf.applyCh <- applyMsg
 		}
 		rf.state.CommitIndex = commitIndex
@@ -1001,7 +1008,7 @@ func (rf *Raft) SendAppendEntries(followerIdx, term, index, leaderCommit, nextIn
 					//日志不匹配错误, 回退到期望的日志, todo: 日后可能需要优化, lab3的时候, 如果过不去需要改成term+index的形式
 					if reply.ConflictIndex > rf.state.NextIndex[followerIdx] {
 						replyBs, _ := json.Marshal(reply)
-						MyPrintf(rf.me, term, index, "[SendAppendEntries], confilictIndex err reply=%v", replyBs)
+						MyPrintf(rf.me, term, index, "[SendAppendEntries], confilictIndex err reply=%v", string(replyBs))
 					}
 					MyPrintf(rf.me, term, index, "[SendAppendEntries] backup %v log %v to %v", followerIdx, rf.state.NextIndex[followerIdx], reply.ConflictIndex)
 					if reply.ConflictIndex-1 > nextIndex {
