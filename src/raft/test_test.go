@@ -26,6 +26,9 @@ func TestInitialElection2A(t *testing.T) {
 
 	cfg.begin("Test (2A): initial election")
 
+	//for {
+	//	time.Sleep(time.Second * 10)
+	//}
 	// is a leader elected?
 	cfg.checkOneLeader()
 
