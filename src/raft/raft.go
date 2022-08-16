@@ -624,22 +624,22 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.ConflictIndex = args.PrevLogIndex
 		return
 	}
+	//这里校验和追加必须原子化, 不然会小概率出现校验通过后解锁,然后另一个线程追加, 之后本线程追加, 然后造成index和log的下标不一致的情况
+	defer rf.rwMu.Unlock()
+	rf.rwMu.Lock()
 	if len(args.Logs) > 0 {
 		nowArgLog := args.Logs[0]
 		nowIdx := nowArgLog.Index
 		//如果是已存在的条目, 那么判断是第二次发送还是新ld覆盖, 会出现这种情况一定是i==0的时候, 毕竟如果后面的存在了前面的也一定存在
 		if nowIdx <= currentIndex {
-			rf.rwMu.RLock()
 			nowTerm := rf.state.CurrentTerm
 			//不是发给我的
 			if nowTerm != currentTerm {
 				reply.Err = MyPrintf(rf.me, nowTerm, currentIndex, "[AppendEntries] get past request, target term=%v", currentTerm)
 				reply.ConflictIndex = args.PrevLogIndex + 1
-				rf.rwMu.RUnlock()
 				return
 			}
 			nowLog := rf.state.Logs[nowIdx]
-			rf.rwMu.RUnlock()
 			//二次发送, 让他重试最新的
 			if nowArgLog.Term == nowLog.Term {
 				reply.Err = MyPrintf(rf.me, nowTerm, currentIndex, "[AppendEntries] This log already exists, log.Index=%v, maxLog.Index=%v", nowArgLog.Index, currentIndex)
@@ -647,13 +647,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				return
 			}
 			//产生冲突
-			rf.rwMu.Lock()
 			nowTerm = rf.state.CurrentTerm
 			//是发给我的, 截断现有条目及其之后所以条目
 			if nowTerm == currentTerm {
 				reply.Err = MyPrintf(rf.me, nowTerm, currentIndex, "[AppendEntries] cut of log, cut of index=%v", nowLog.Index)
 				rf.state.Logs = rf.state.Logs[:nowLog.Index]
-				rf.rwMu.Unlock()
 				reply.ConflictIndex = nowLog.Index
 				return
 			} else {
@@ -661,13 +659,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				reply.Err = MyPrintf(rf.me, nowTerm, currentIndex, "[AppendEntries] get past request, target term=%v", currentTerm)
 				//todo : 这里的回退lab3可能也会优化
 				reply.ConflictIndex = currentIndex + 1
-				rf.rwMu.Unlock()
 				return
 			}
 		}
 	}
 
-	rf.rwMu.Lock()
 	//更新commitIndex
 	if args.LeaderCommit > rf.state.CommitIndex {
 		commitIndex := Min(args.LeaderCommit, len(rf.state.Logs)-1)
@@ -710,7 +706,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	//当前服务器收到之前那个请求, prevLog判断无误, 因为是心跳, 不判断args.Log不追加, 然后更改confictIndex为len(logs)这个值比leader的len(logs)多
 	//leader错误更新nextIndex, 导致index out of range 的 panic
 	confictIndex := args.PrevLogIndex + len(args.Logs) + 1
-	rf.rwMu.Unlock()
 	reply.Success = true
 	reply.ConflictIndex = confictIndex
 	return
