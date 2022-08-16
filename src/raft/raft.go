@@ -544,11 +544,11 @@ func (rf *Raft) sendLog(followerIdx int) {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	defer func() {
 		if reply.ConflictIndex-args.PrevLogIndex > 2 {
-			rf.rwMu.Lock()
+			//rf.rwMu.Lock()
 			argbs, _ := json.Marshal(args)
 			replybs, _ := json.Marshal(reply)
 			MyPrintf(rf.me, rf.state.CurrentTerm, len(rf.state.Logs), "reply conflict err, args=%v,reply=%v", string(argbs), string(replybs))
-			rf.rwMu.Unlock()
+			//rf.rwMu.Unlock()
 		}
 	}()
 	//自己噶了
@@ -620,8 +620,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 	//这里校验和追加必须原子化, 不然会小概率出现校验通过后解锁,然后另一个线程追加, 之后本线程追加, 然后造成index和log的下标不一致的情况
-	defer rf.rwMu.Unlock()
-	rf.rwMu.Lock()
 	if len(args.Logs) > 0 {
 		nowArgLog := args.Logs[0]
 		nowIdx := nowArgLog.Index
