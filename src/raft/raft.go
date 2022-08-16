@@ -559,8 +559,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.ConflictIndex = args.PrevLogIndex + 1
 		return
 	}
+	defer rf.rwMu.Unlock()
+	rf.rwMu.Lock()
 	reply.Id = rf.me
-	rf.rwMu.RLock()
 	//以收到时为准, 因为rf的CurrentTerm可能会被其他携程更新
 	currentTerm, _ := rf.GetState()
 	currentIndex := len(rf.state.Logs) - 1
@@ -568,7 +569,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if currentIndex >= args.PrevLogIndex {
 		preLog = rf.state.Logs[args.PrevLogIndex]
 	}
-	rf.rwMu.RUnlock()
 	if args.LeaderId == rf.me {
 		reply.Term = currentTerm
 		reply.Success = true
@@ -582,14 +582,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Err = MyPrintf(rf.me, currentTerm, currentIndex, "[AppendEntries] receiving an overdue request term = %v, prevLogIndex = %v", args.Term, args.PrevLogIndex)
 		return
 	}
-	rf.rwMu.Lock()
 	//更新心跳时间
 	voteTimeout := time.Now().UnixNano()/1000000 + rand.Int63n(HEART_TIME*TIMEOUT_CNT) + HEART_TIME*TIMEOUT_CNT
 	rf.voteTimeout = voteTimeout
-	rf.rwMu.Unlock()
 	//MyPrintf(rf.me, currentTerm, currentIndex, "[AppendEntries]get %v heart, update voteTimeout to %v", args.LeaderId, rf.voteTimeout)
 	if args.Term > currentTerm {
-		rf.rwMu.Lock()
 		//收到更高的RPC心跳, 更新为follower
 		nowTerm := rf.state.CurrentTerm
 		nowIndex := len(rf.state.Logs) - 1
@@ -607,10 +604,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			reply.Err = MyPrintf(rf.me, nowTerm, nowIndex, "[AppendEntries] get past request, target term=%v", currentTerm)
 			//todo : 这里的回退lab3可能也会优化
 			reply.ConflictIndex = args.PrevLogIndex + 1
-			rf.rwMu.Unlock()
 			return
 		}
-		rf.rwMu.Unlock()
 	}
 	//追随者日志中没有prevLog
 	if preLog == nil {
@@ -689,7 +684,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		rf.state.CommitIndex = commitIndex
 		rf.state.LastApplied = Max(rf.state.CommitIndex, rf.state.LastApplied)
-		MyPrintf(rf.me, currentTerm, currentIndex, "[AppendEntries] update commitIndex to %v", rf.state.CommitIndex)
+		//MyPrintf(rf.me, currentTerm, currentIndex, "[AppendEntries] update commitIndex to %v", rf.state.CommitIndex)
 	}
 	//追加
 	for i := 0; i < len(args.Logs); i++ {
@@ -962,7 +957,7 @@ func (rf *Raft) SendAppendEntries(followerIdx, term, index, leaderCommit, nextIn
 	}()
 	select {
 	case <-end:
-		MyPrintf(rf.me, term, index, "[SendAppendEntries] rpc to %v timeout", followerIdx)
+		//MyPrintf(rf.me, term, index, "[SendAppendEntries] rpc to %v timeout", followerIdx)
 		return SLEEP_TIME, nil
 	case reply := <-ok:
 		if reply == nil {
@@ -984,7 +979,7 @@ func (rf *Raft) SendAppendEntries(followerIdx, term, index, leaderCommit, nextIn
 					rf.state.NextIndex[followerIdx] = reply.ConflictIndex
 					rf.state.MatchIndex[followerIdx] = reply.ConflictIndex - 1
 					//可能会打印很多次, 这很正常, 因为有心跳
-					MyPrintf(rf.me, term, index, "[sendAppendEntries] success update %v MatchIndex to %v and update nextIndex to %v", followerIdx, reply.ConflictIndex-1, reply.ConflictIndex)
+					//MyPrintf(rf.me, term, index, "[sendAppendEntries] success update %v MatchIndex to %v and update nextIndex to %v", followerIdx, reply.ConflictIndex-1, reply.ConflictIndex)
 				}
 			} else if reply.Term > term { //任期过期错误
 				nowTerm := rf.state.CurrentTerm
