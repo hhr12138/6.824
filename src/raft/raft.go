@@ -69,7 +69,13 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-	state           *State        //当前副本的状态
+	state       *State //当前副本的状态
+	CommitIndex int    //当前服务器提交的最大索引
+	//LogCommitIndex int         //存在内容的日志的最大索引
+	LastApplied     int           //当前服务器应用的最大条目
+	Identity        int           //身份, 0->leader, 1->follower, 2->candidate
+	NextIndex       []int         //每个follower下一个log entries的索引, 在当选leader时初始化为leader的最后一个索引+1(即len(Logs))
+	MatchIndex      []int         //已经同步到follower的日志
 	applyCh         chan ApplyMsg // 返回给tester告诉他该消息以提交
 	appendEntriesCh chan []string //发送给leader的AppendEntries, 用来从里面取东西更新ld的log[]
 	voteTimeout     int64         //选举超时
@@ -86,12 +92,6 @@ type State struct {
 	CurrentTerm int         //当前节点认为的最新任期, 需要加锁, 存在并发问题
 	VotedFor    interface{} //获得该节点投票的节点标识, 对应ClientEnd的endName
 	Logs        []*Log      //存储的日志, 需要加锁, 存在并发问题
-	CommitIndex int         //当前服务器提交的最大索引
-	//LogCommitIndex int         //存在内容的日志的最大索引
-	LastApplied int   //当前服务器应用的最大条目
-	Identity    int   //身份, 0->leader, 1->follower, 2->candidate
-	NextIndex   []int //每个follower下一个log entries的索引, 在当选leader时初始化为leader的最后一个索引+1(即len(Logs))
-	MatchIndex  []int //已经同步到follower的日志
 }
 
 func (rf *Raft) termAndIdentityCheck(identity, term, nowTerm, index int) bool {
@@ -174,7 +174,7 @@ func (rf *Raft) StartVote(term, index int, endTime int64, lastLog *Log) {
 					rf.rwMu.Lock()
 					//真实变更时需要进行二次检测
 					nowTerm := rf.state.CurrentTerm
-					identity := rf.state.Identity
+					identity := rf.Identity
 					// "在一个任期内，如果收到大多数服务器投票，candidate就赢得了选举。"
 					//如果任期改变了, 那么这次选举失效
 					if !rf.termAndIdentityCheck(identity, term, nowTerm, index) {
@@ -195,9 +195,9 @@ func (rf *Raft) StartVote(term, index int, endTime int64, lastLog *Log) {
 						//然后死了的俩活了, 之后给了他们错误的leaderCommit, 然后G了
 						matchIndex[i] = -1
 					}
-					rf.state.MatchIndex = matchIndex
-					rf.state.NextIndex = nextIndexs
-					rf.state.Identity = 0
+					rf.MatchIndex = matchIndex
+					rf.NextIndex = nextIndexs
+					rf.Identity = 0
 					MyPrintf(rf.me, term, index, "[StartVote] vote success")
 					rf.rwMu.Unlock()
 					//todo: 明天重新写下
@@ -256,7 +256,7 @@ func (rf *Raft) heartCheck() {
 				rf.voteTimeout = nextVoteTimeout
 				rf.state.CurrentTerm++
 				rf.state.VotedFor = rf.me
-				rf.state.Identity = 2
+				rf.Identity = 2
 				lastLog := rf.state.Logs[len(rf.state.Logs)-1]
 				//MyPrintf(rf.me, term, index, "[heartCheck], update identity=candidate, update voteTimeout=%v", nextVoteTimeout)
 				rf.rwMu.Unlock()
@@ -277,7 +277,7 @@ func (rf *Raft) GetState() (int, bool) {
 	// Your code here (2A).
 	rf.mu.Lock()
 	term = rf.state.CurrentTerm
-	isleader = rf.state.Identity == 0
+	isleader = rf.Identity == 0
 	rf.mu.Unlock()
 	return term, isleader
 }
@@ -370,8 +370,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if args.Term > term {
 		rf.state.CurrentTerm = args.Term
 		rf.state.VotedFor = -1
-		if rf.state.Identity != 1 {
-			rf.state.Identity = 1
+		if rf.Identity != 1 {
+			rf.Identity = 1
 			MyPrintf(rf.me, term, index, "[RequestVote] get higher term RPC request from %v, update to follower", args.CandidateId)
 		}
 	}
@@ -505,15 +505,15 @@ func (rf *Raft) sendLog(followerIdx int) {
 			rf.rwMu.RUnlock()
 			return
 		}
-		leaderCommit := rf.state.CommitIndex
-		if len(rf.state.NextIndex) == 0 {
+		leaderCommit := rf.CommitIndex
+		if len(rf.NextIndex) == 0 {
 			rf.rwMu.RUnlock()
 			MyPrintf(rf.me, term, index, "[sendLog] leader doing init")
 			time.Sleep(time.Millisecond * time.Duration(SLEEP_TIME))
 			continue
 		}
-		nextIndex := rf.state.NextIndex[followerIdx]
-		matchIndex := rf.state.MatchIndex[followerIdx]
+		nextIndex := rf.NextIndex[followerIdx]
+		matchIndex := rf.MatchIndex[followerIdx]
 		//理论上不可能
 		if nextIndex == 0 {
 			panic("err : [sendLog] nextIndex == 0")
@@ -594,8 +594,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		if currentTerm == nowTerm {
 			rf.state.CurrentTerm = args.Term
 			rf.state.VotedFor = -1
-			if identity := rf.state.Identity; identity != 1 {
-				rf.state.Identity = 1
+			if identity := rf.Identity; identity != 1 {
+				rf.Identity = 1
 				MyPrintf(rf.me, currentTerm, currentIndex, "[AppendEntries] update %v to follower", identity)
 			}
 			currentTerm = args.Term
@@ -658,9 +658,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	//更新commitIndex
-	if args.LeaderCommit > rf.state.CommitIndex {
+	if args.LeaderCommit > rf.CommitIndex {
 		commitIndex := Min(args.LeaderCommit, len(rf.state.Logs)-1)
-		for i := rf.state.CommitIndex + 1; i <= commitIndex; i++ {
+		for i := rf.CommitIndex + 1; i <= commitIndex; i++ {
 			log := rf.state.Logs[i]
 			applyMsg := ApplyMsg{
 				CommandValid: true,
@@ -680,8 +680,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			MyPrintf(rf.me, currentTerm, currentIndex, "[AppendEntries] apply msg %v, command=%v, msgTerm=%v, nowLog=%v,lastIndex=%v,lastTerm=%v,prevLog=%v, args=%v", applyMsg.CommandIndex, applyMsg.Command, rf.state.Logs[i].Term, string(logs), args.PrevLogIndex, args.PrevLogTerm, string(prevLog), string(argBs))
 			rf.applyCh <- applyMsg
 		}
-		rf.state.CommitIndex = commitIndex
-		rf.state.LastApplied = Max(rf.state.CommitIndex, rf.state.LastApplied)
+		rf.CommitIndex = commitIndex
+		rf.LastApplied = Max(rf.CommitIndex, rf.LastApplied)
 		//MyPrintf(rf.me, currentTerm, currentIndex, "[AppendEntries] update commitIndex to %v", rf.state.CommitIndex)
 	}
 	//追加
@@ -739,20 +739,21 @@ func (rf *Raft) killed() bool {
 // 尽快返回, 因此需要把长时间的任务交给别的携程并行执行
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
-	rf := &Raft{}
-	rf.peers = peers
-	rf.persister = persister
-	rf.me = me
+	rf := &Raft{
+		CommitIndex: 0,
+		LastApplied: 0,
+		Identity:    1,
+		peers:       peers,
+		persister:   persister,
+		me:          me,
+		applyCh:     applyCh,
+	}
 
 	// Your initialization code here (2A, 2B, 2C).
-	rf.applyCh = applyCh
 	rf.state = &State{
 		CurrentTerm: 0,
 		VotedFor:    -1,
 		Logs:        make([]*Log, 1),
-		CommitIndex: 0,
-		LastApplied: 0,
-		Identity:    1,
 	}
 	rf.state.Logs[0] = &Log{
 		Term:  0,
@@ -804,12 +805,12 @@ func (rf *Raft) commit() {
 			MyPrintf(rf.me, term, index, "[commit] exit")
 			return
 		}
-		commitIndex := rf.state.CommitIndex
-		for i := rf.state.CommitIndex + 1; i < index; i++ {
+		commitIndex := rf.CommitIndex
+		for i := rf.CommitIndex + 1; i < index; i++ {
 			//=1是因为一定能得到自己的一票, 这样就不用给自己心跳了
 			cnt := 1
 			for j := 0; j < len(rf.peers); j++ {
-				if rf.state.MatchIndex[j] >= i && j != rf.me {
+				if rf.MatchIndex[j] >= i && j != rf.me {
 					cnt++
 				}
 			}
@@ -819,14 +820,15 @@ func (rf *Raft) commit() {
 			commitIndex = i
 			flag = true
 		}
+		commitLog := rf.state.Logs[commitIndex]
 		rf.rwMu.RUnlock()
-		//有新条目需要提交
-		if flag {
+		//有新条目需要提交, 每个leader只提交自己任期的日志(见Figure 8)
+		if flag && commitLog.Term == term {
 			rf.rwMu.Lock()
 			currentTerm, _ := rf.GetState()
 			if term == currentTerm {
 				MyPrintf(rf.me, term, commitIndex, "[commit] %v commited", commitIndex)
-				for i := rf.state.CommitIndex + 1; i <= commitIndex; i++ {
+				for i := rf.CommitIndex + 1; i <= commitIndex; i++ {
 					applyMsg := ApplyMsg{
 						CommandValid: true,
 						Command:      rf.state.Logs[i].Entries,
@@ -835,9 +837,9 @@ func (rf *Raft) commit() {
 					rf.applyCh <- applyMsg
 					MyPrintf(rf.me, term, commitIndex, "[commit] apply msg %v, command=%v, msgTerm=%v", applyMsg.CommandIndex, applyMsg.Command, rf.state.Logs[i].Term)
 				}
-				rf.state.CommitIndex = commitIndex
-				if rf.state.CommitIndex > rf.state.LastApplied {
-					rf.state.LastApplied = rf.state.CommitIndex
+				rf.CommitIndex = commitIndex
+				if rf.CommitIndex > rf.LastApplied {
+					rf.LastApplied = rf.CommitIndex
 				}
 			}
 			rf.rwMu.Unlock()
@@ -892,11 +894,11 @@ func (rf *Raft) sendHeart(followerIdx int) {
 			MyPrintf(rf.me, term, index, "stop send heart")
 			return
 		}
-		nextIndex := rf.state.NextIndex[followerIdx]
-		matchIndex := rf.state.MatchIndex[followerIdx]
-		leaderCommit := rf.state.CommitIndex
+		nextIndex := rf.NextIndex[followerIdx]
+		matchIndex := rf.MatchIndex[followerIdx]
+		leaderCommit := rf.CommitIndex
 		if nextIndex-1 > index {
-			MyPrintf(rf.me, term, index, "index out of range, nextIndex = %v, me.state=%v", nextIndex, rf.state.Identity)
+			MyPrintf(rf.me, term, index, "index out of range, nextIndex = %v, me.state=%v", nextIndex, rf.Identity)
 		}
 		lastLog := rf.state.Logs[nextIndex-1]
 		rf.rwMu.RUnlock()
@@ -969,13 +971,13 @@ func (rf *Raft) SendAppendEntries(followerIdx, term, index, leaderCommit, nextIn
 				rf.rwMu.Unlock()
 				return 0, nil
 			}
-			nowNextIndex := rf.state.NextIndex[followerIdx]
-			nowMathchIndex := rf.state.MatchIndex[followerIdx]
+			nowNextIndex := rf.NextIndex[followerIdx]
+			nowMathchIndex := rf.MatchIndex[followerIdx]
 			if reply.Success {
 				//成功简单更新就行
 				if nowNextIndex == nextIndex && nowMathchIndex == matchIndex {
-					rf.state.NextIndex[followerIdx] = reply.ConflictIndex
-					rf.state.MatchIndex[followerIdx] = reply.ConflictIndex - 1
+					rf.NextIndex[followerIdx] = reply.ConflictIndex
+					rf.MatchIndex[followerIdx] = reply.ConflictIndex - 1
 					//可能会打印很多次, 这很正常, 因为有心跳
 					//MyPrintf(rf.me, term, index, "[sendAppendEntries] success update %v MatchIndex to %v and update nextIndex to %v", followerIdx, reply.ConflictIndex-1, reply.ConflictIndex)
 				}
@@ -989,20 +991,20 @@ func (rf *Raft) SendAppendEntries(followerIdx, term, index, leaderCommit, nextIn
 					rf.state.VotedFor = -1
 					//收到更改Term, 退位
 					MyPrintf(rf.me, term, index, "[sendAppendEntries] get%v highter term %v, update to follower", followerIdx, reply.Term)
-					rf.state.Identity = 1
+					rf.Identity = 1
 				}
 			} else {
 				if nowNextIndex == nextIndex {
 					//日志不匹配错误, 回退到期望的日志, todo: 日后可能需要优化, lab3的时候, 如果过不去需要改成term+index的形式
-					if reply.ConflictIndex > rf.state.NextIndex[followerIdx] {
+					if reply.ConflictIndex > rf.NextIndex[followerIdx] {
 						replyBs, _ := json.Marshal(reply)
 						MyPrintf(rf.me, term, index, "[SendAppendEntries], confilictIndex err reply=%v", string(replyBs))
 					}
-					MyPrintf(rf.me, term, index, "[SendAppendEntries] backup %v log %v to %v", followerIdx, rf.state.NextIndex[followerIdx], reply.ConflictIndex)
+					MyPrintf(rf.me, term, index, "[SendAppendEntries] backup %v log %v to %v", followerIdx, rf.NextIndex[followerIdx], reply.ConflictIndex)
 					if reply.ConflictIndex-1 > nextIndex {
 						MyPrintf(rf.me, term, index, "index out of, follower=%v", followerIdx)
 					}
-					rf.state.NextIndex[followerIdx] = reply.ConflictIndex
+					rf.NextIndex[followerIdx] = reply.ConflictIndex
 				}
 			}
 			rf.rwMu.Unlock()
