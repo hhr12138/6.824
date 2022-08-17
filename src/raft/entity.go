@@ -5,7 +5,8 @@ const (
 	TIMEOUT_CNT      = 5   //超时次数
 	BUFFER_SIZE      = 100 //缓冲AppendEntries数目
 	SLEEP_TIME       = 50  //没新AppendEntries时短暂睡眠会, ms
-	VOTE_REPLACE_CNT       //选举超时最大重试次数
+	VOTE_REPLACE_CNT = 5   //选举超时最大重试次数
+	SEND_LOG_CNT     = 50  //一次RPC发送的最大日志数目
 )
 
 type AppendEntriesArgs struct {
@@ -19,7 +20,8 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
-	Term          int    `json:"term"`           //用于让master更新自己
+	Term int `json:"term"` //用于让master更新自己
+	//ConflictTerm  int    `json:"conflict_term"`  //用于加速回溯
 	ConflictIndex int    `json:"conflict_index"` //用于加速回溯, 让leader更新自己的nextIndex
 	Success       bool   `json:"success"`        //是否成功
 	Err           string `json:"err"`            //错误的信息
