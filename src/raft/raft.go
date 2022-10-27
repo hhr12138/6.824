@@ -54,13 +54,15 @@ type ApplyMsg struct {
 }
 
 type LogState int
+//type LogCache struct{
+//	state LogState
+//	value interface{}
+//}
 
 const(
 	NOT_FIND LogState = 0
 	COMMITTED LogState = 1
 	WORKING LogState = 2
-	REMOVED LogState = 3
-
 )
 
 func init() {
@@ -90,12 +92,18 @@ type Raft struct {
 	MatchIndex      []int         //已经同步到follower的日志
 	applyCh         chan ApplyMsg // 返回给tester告诉他该消息以提交
 	//appendEntriesCh chan []string //发送给leader的AppendEntries, 用来从里面取东西更新ld的log[]
-	logStates map[string]LogState //记录每个log的状态, id->状态, NOT_FIND: 未到, COMMITTED: 已提交, WORKING: 执行中, REMOVED: 提交完删除请求正在等待物理删除
+	logStates map[string]LogState //记录每个log的状态, id->状态, NOT_FIND: 未到, COMMITTED: 已提交(已删除但没物理删除的也按照已提交算吧, 毕竟不重复执行就行, 按原本返回即可), WORKING: 执行中
 	voteTimeout     int64         //选举超时
 	rwMu            sync.RWMutex  //读写锁
 	buf             *bytes.Buffer
 	dec             *labgob.LabDecoder
 	enc             *labgob.LabEncoder
+}
+
+type LogCommand struct {
+	RequestId string
+	IsGet bool
+	Command interface{}
 }
 
 type Log struct {
@@ -118,6 +126,7 @@ func (rf *Raft) termAndIdentityCheck(identity, term, nowTerm, index int) bool {
 	}
 	return true
 }
+
 
 // term 选举发起时的任期
 func (rf *Raft) StartVote(term, index int, endTime int64, lastLog *Log) {
@@ -211,6 +220,8 @@ func (rf *Raft) StartVote(term, index int, endTime int64, lastLog *Log) {
 						//然后死了的俩活了, 之后给了他们错误的leaderCommit, 然后G了
 						matchIndex[i] = -1
 					}
+					states := rf.initLogStates()
+					rf.logStates = states
 					rf.MatchIndex = matchIndex
 					rf.NextIndex = nextIndexs
 					rf.Identity = 0
@@ -476,32 +487,61 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
 	term := -1
-	isLeader := true
 	var log *Log
-	// Your code here (2B).
+	logCommand,ok := command.(LogCommand)
+	requestId := ""
+	if ok{
+		requestId = logCommand.RequestId
+	}
 	rf.rwMu.Lock()
-	term, ld := rf.GetState()
-	died := rf.killed()
+	defer rf.rwMu.Unlock()
 	//其他的一般index都是=rf.state.Logs-1的, 但现在这是个追加log的操作, 追加后index就正确了, emm, 应该咋写都行, 先这样吧
 	index = len(rf.state.Logs)
+	term, ld := rf.GetState()
+	died := rf.killed()
+	if !ld || died{
+		return -1,-1,false
+	}
+	//get请求多次执行就行, 不需要requestId
+	if len(requestId) != 0 && !logCommand.IsGet{
+		MyPrintf(Info,rf.me,term,index,"receive a put/append request requestId = %v",requestId)
+		state,exist := rf.logStates[requestId]
+		//这个请求已经收到了, 无需重复请求了
+		if exist && state > NOT_FIND{
+			return -1,-1,true
+		}
+	}
 	//leaderCommit := rf.state.CommitIndex
 	//lastLog := rf.state.Logs[index - 1]
-	if !ld || died {
-		isLeader = false
-	} else {
-		log = &Log{
-			Term:    term,
-			Index:   index,
-			Entries: command,
+	log = &Log{
+		Term:    term,
+		Index:   index,
+		Entries: command,
+	}
+	rf.state.Logs = append(rf.state.Logs, log)
+	rf.persist()
+	MyPrintf(Info, rf.me, term, index, "[start] append new log, entries=%v", command)
+	return index, term, true
+}
+
+//lab3
+func(rf *Raft) initLogStates() map[string]LogState{
+	resp := make(map[string]LogState)
+	logs := rf.state.Logs
+	for _,log := range logs{
+		entry,ok := log.Entries.(LogCommand)
+		if !ok{
+			continue
 		}
-		rf.state.Logs = append(rf.state.Logs, log)
-		rf.persist()
+		var s LogState
+		if log.Index < rf.CommitIndex{
+			s = COMMITTED
+		} else{
+			s = WORKING
+		}
+		resp[entry.RequestId] = s
 	}
-	rf.rwMu.Unlock()
-	if isLeader {
-		MyPrintf(Info, rf.me, term, index, "[start] append new log, entries=%v", command)
-	}
-	return index, term, isLeader
+	return resp
 }
 
 func (rf *Raft) sendLog(followerIdx int) {
@@ -906,7 +946,7 @@ func (rf *Raft) SendAppendEntries(followerIdx, term, index, leaderCommit, nextIn
 					rf.NextIndex[followerIdx] = reply.ConflictIndex
 					rf.MatchIndex[followerIdx] = reply.ConflictIndex - 1
 					//可能会打印很多次, 这很正常, 因为有心跳
-					MyPrintf(Info, rf.me, term, index, "[sendAppendEntries] success update %v MatchIndex to %v and update nextIndex to %v", followerIdx, reply.ConflictIndex-1, reply.ConflictIndex)
+					MyPrintf(Debug, rf.me, term, index, "[sendAppendEntries] success update %v MatchIndex to %v and update nextIndex to %v", followerIdx, reply.ConflictIndex-1, reply.ConflictIndex)
 				}
 			} else if reply.Term > term { //任期过期错误
 				//必须优先更新任期

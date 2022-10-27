@@ -7,8 +7,8 @@ import (
 )
 
 // Debugging
-const IsDebug = 1
-const nowLogLevel = Info
+const IsNotDebug = 1
+const nowLogLevel = Error
 
 type LogLevel int
 const (
@@ -20,7 +20,7 @@ const (
 )
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
-	if IsDebug > 0 {
+	if IsNotDebug > 0 {
 		log.Printf(format, a...)
 	}
 	return

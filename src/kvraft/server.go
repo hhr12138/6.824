@@ -3,21 +3,52 @@ package kvraft
 import (
 	"../labgob"
 	"../labrpc"
-	"log"
 	"../raft"
+	"fmt"
+	"log"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
-const Debug = 0
-
+const IsNotDebug = 1
+const nowLogLevel = Info
+type LogLevel int
+const (
+	Debug LogLevel = 0
+	Info LogLevel = 1
+	Warn LogLevel = 2
+	Error LogLevel = 3
+	Critcal LogLevel = 4
+)
+const(
+	WAIT_CHANNEL_RESP_SLEEP_TIME = 50 //ms
+)
 func DPrintf(format string, a ...interface{}) (n int, err error) {
-	if Debug > 0 {
+	if IsNotDebug > 0 {
 		log.Printf(format, a...)
 	}
 	return
 }
 
+func MyPrintf(level LogLevel, me int, format string, a ...interface{}) string {
+	if level < nowLogLevel{
+		return ""
+	}
+	str := fmt.Sprintf("level=%v, server %v ",level, me)
+	ans := fmt.Sprintf(str+format, a...)
+	DPrintf(str+format, a...)
+	return ans
+}
+func ClientPrintf(level LogLevel, me string, format string, a ...interface{}) string {
+	if level < nowLogLevel{
+		return ""
+	}
+	str := fmt.Sprintf("level=%v, server %v ",level, me)
+	ans := fmt.Sprintf(str+format, a...)
+	DPrintf(str+format, a...)
+	return ans
+}
 
 type Op struct {
 	// Your definitions here.
@@ -31,19 +62,138 @@ type KVServer struct {
 	rf      *raft.Raft
 	applyCh chan raft.ApplyMsg
 	dead    int32 // set by Kill()
+	database map[string]string //KV数据库
+	commandToResp sync.Map //用来兼容请求响应模型和流式处理模型的map, term:index->该log的执行结果
 
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
 }
 
+type GetCommand struct{
+	Ope string `json:"ope"`
+	Args *GetArgs `json:"args"`
+}
+
+type PutCommand struct{
+	Ope string `json:"ope"`
+	Args *PutAppendArgs
+}
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	//get请求保证幂等了, 无需记录id
+	common := &raft.LogCommand{
+		RequestId: args.RequestId,
+		IsGet: true,
+		Command: GetCommand{
+			Ope: "Get",
+			Args: args,
+		},
+	}
+	_, _, isLeader := kv.rf.Start(common)
+	if kv.killed() || !isLeader{
+		reply.Err = "is not leader"
+		reply.Code = NOT_LEADER
+	} else{
+		chId := args.RequestId
+		ch := make(chan string,0)
+		kv.commandToResp.Store(chId, ch)
+		loop:
+		for{
+			_, isLeader := kv.rf.GetState()
+			if !isLeader{
+				reply.Err = "is not leader"
+				break
+			}
+			select{
+			case reply.Value = <-ch:
+				reply.Code = SUCCESS
+				break loop
+			default:
+			}
+			time.Sleep(WAIT_CHANNEL_RESP_SLEEP_TIME*time.Millisecond)
+		}
+	}
+	return
 }
-
+//可以尝试加个超时时间
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+	common := &raft.LogCommand{
+		RequestId: args.RequestId,
+		IsGet: false,
+		Command: PutCommand{
+			Ope: args.Op,
+			Args: args,
+		},
+	}
+	index, term, isLeader := kv.rf.Start(common)
+	if kv.killed() || !isLeader{
+		reply.Err = "is not leader"
+		reply.Code = NOT_LEADER
+	}else if index == -1 || term == -1{
+		reply.Err = "repeat request"
+		reply.Code = REPEAT_REQUEST
+	} else{
+		chId := args.RequestId
+		ch := make(chan error,0)
+		kv.commandToResp.Store(chId, ch)
+		loop:
+		for{
+			select{
+			case err := <-ch:
+				if err != nil{
+					reply.Code = SUCCESS
+					reply.Err= Err(err.Error())
+				}
+				break loop
+			default:
+			}
+		}
+		time.Sleep(WAIT_CHANNEL_RESP_SLEEP_TIME*time.Millisecond)
+	}
+	return
+}
+
+func (kv *KVServer) executeLogs(){
+	for {
+		select {
+		case msg:=<-kv.applyCh:
+			if msg.CommandValid{
+				command, ok := msg.Command.(raft.LogCommand)
+				if !ok{
+					MyPrintf(Error,kv.me,"can not change command to raft.LogCommand command=%v",command)
+				}
+				if command.IsGet{
+					getCommand := command.Command.(GetCommand)
+					key := getCommand.Args.Key
+					value := kv.database[key]
+					requestId := command.RequestId
+					o,_ := kv.commandToResp.Load(requestId)
+					ch := o.(chan string)
+					ch<-value
+					MyPrintf(Info,kv.me,"get request success requestId=%v, key=%v",requestId,key)
+				} else{
+					putOrAppCommand := command.Command.(PutCommand)
+					requestId := putOrAppCommand.Args.RequestId
+					op := putOrAppCommand.Args.Op
+					key := putOrAppCommand.Args.Key
+					value := putOrAppCommand.Args.Value
+					if op == "Put"{
+						kv.database[key] = value
+					} else{
+						str := kv.database[key]
+						kv.database[key] = str+value
+					}
+					o,_ := kv.commandToResp.Load(requestId)
+					ch := o.(chan error)
+					ch<-nil
+					MyPrintf(Info,kv.me,"%v success requestId=%v, key=%v, value=%v",op,requestId,key,value)
+				}
+			}
+		}
+	}
 }
 
 //
@@ -60,6 +210,7 @@ func (kv *KVServer) Kill() {
 	atomic.StoreInt32(&kv.dead, 1)
 	kv.rf.Kill()
 	// Your code here, if desired.
+	MyPrintf(Info, kv.me,"died")
 }
 
 func (kv *KVServer) killed() bool {
@@ -96,6 +247,6 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
-
+	go kv.executeLogs()
 	return kv
 }
