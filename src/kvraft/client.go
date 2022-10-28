@@ -52,24 +52,33 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // must match the declared types of the RPC handler function's
 // arguments. and reply must be passed as a pointer.
 //
+
+func (ck *Clerk) getRequestId() string{
+	requestId := fmt.Sprintf("%v:%v",ck.me,atomic.AddInt64(ck.requestCnt,1))
+	return requestId
+}
+
 func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function.
+	result := ""
 	reqeustCnt := int64(0)
 	serverCnt := int64(len(ck.servers))
-	requestId := fmt.Sprintf("%v:%v",ck.me,atomic.AddInt64(ck.requestCnt,1))
+	requestId := ck.getRequestId()
 	ClientPrintf(Info,ck.me,"send a get request requestId=%v",requestId)
 	args := &GetArgs{
 		Key: key,
 		RequestId: requestId,
 	}
 	reply := &GetReply{}
+	idx := atomic.LoadInt64(&ck.leader)
 	for {
-		idx := ck.leader
+		args.RequestCnt = reqeustCnt
 		ck.servers[idx].Call("KVServer.Get",args,reply)
 		//不成功就一直重试.
 		if reply.Code == SUCCESS{
 			atomic.StoreInt64(&ck.leader,idx)
-			return reply.Value
+			result = reply.Value
+			break
 		} else if reply.Code == REPEAT_REQUEST{ //目前设计的get不会算作重复请求
 			ClientPrintf(Warn, ck.me, "send a repeated get request: reqeustId=%v",requestId)
 		}
@@ -78,8 +87,10 @@ func (ck *Clerk) Get(key string) string {
 		if reqeustCnt == serverCnt{
 			ClientPrintf(Error,ck.me,"can not find leader: requestId=%v",requestId)
 		}
+		time.Sleep(CLIENT_SLEEP_TIME*time.Millisecond)
 	}
-	return ""
+	ck.Remove(requestId)
+	return result
 }
 
 //
@@ -95,7 +106,7 @@ func (ck *Clerk) Get(key string) string {
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	reqeustCnt := int64(0)
 	serverCnt := int64(len(ck.servers))
-	requestId := fmt.Sprintf("%v:%v",ck.me,atomic.AddInt64(ck.requestCnt,1))
+	requestId := ck.getRequestId()
 	ClientPrintf(Info,ck.me,"send a %v request requestId=%v",op,requestId)
 	args := &PutAppendArgs{
 		Key: key,
@@ -104,13 +115,51 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		RequestId: requestId,
 	}
 	reply := &PutAppendReply{}
-	idx := ck.leader
+	idx := atomic.LoadInt64(&ck.leader)
 	for {
+		args.RequestCnt = reqeustCnt
 		ck.servers[idx].Call("KVServer.PutAppend",args,reply)
 		//不成功就一直重试.
 		if reply.Code == SUCCESS{
 			atomic.StoreInt64(&ck.leader,idx)
-			return
+			break
+		} else if reply.Code == REPEAT_REQUEST{ //重复了的putAppend请求, 可能会打印多次...到时候看看是否需要修改下
+			ClientPrintf(Warn, ck.me, "send a repeated putAppend request: reqeustId= %v",requestId)
+		}
+		reqeustCnt++
+		idx = (idx+1)%serverCnt
+		if reqeustCnt == serverCnt{
+			ClientPrintf(Error,ck.me,"can not find leader, request=%v",requestId)
+		}
+		time.Sleep(CLIENT_SLEEP_TIME*time.Millisecond)
+	}
+	ck.Remove(requestId)
+}
+
+func (ck *Clerk) Put(key string, value string) {
+	ck.PutAppend(key, value, "Put")
+}
+func (ck *Clerk) Append(key string, value string) {
+	ck.PutAppend(key, value, "Append")
+}
+
+func (ck *Clerk) Remove(removeRequestId string){
+	reqeustCnt := int64(0)
+	requestId := ck.getRequestId()
+	serverCnt := int64(len(ck.servers))
+	args := &RemoveArgs{
+		RequestId: requestId,
+		RemoveRequestId: removeRequestId,
+	}
+	reply := &RemoveReply{}
+	idx := atomic.LoadInt64(&ck.leader)
+	for {
+		args.RequestCnt = reqeustCnt
+		ck.servers[idx].Call("KVServer.Remove",args,reply)
+		//不成功就一直重试.
+		if reply.Code == SUCCESS{
+			atomic.StoreInt64(&ck.leader,idx)
+			break
 		} else if reply.Code == REPEAT_REQUEST{ //重复了的putAppend请求, 可能会打印多次...到时候看看是否需要修改下
 			ClientPrintf(Warn, ck.me, "send a repeated putAppend request: reqeustId= %v",requestId)
 		}
@@ -120,11 +169,4 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			ClientPrintf(Error,ck.me,"can not find leader, request=%v",requestId)
 		}
 	}
-}
-
-func (ck *Clerk) Put(key string, value string) {
-	ck.PutAppend(key, value, "Put")
-}
-func (ck *Clerk) Append(key string, value string) {
-	ck.PutAppend(key, value, "Append")
 }
