@@ -7,8 +7,8 @@ import (
 )
 
 // Debugging
-const IsNotDebug = 1
-const nowLogLevel = Error
+const IsNotDebug = 0
+const nowLogLevel = Info
 
 type LogLevel int
 const (

@@ -49,7 +49,9 @@ package labrpc
 //   pass svc to srv.AddService()
 //
 
-import "../labgob"
+import (
+	"../labgob"
+)
 import "bytes"
 import "reflect"
 import "sync"
@@ -83,6 +85,11 @@ type ClientEnd struct {
 // no reply was received from the server.
 // 超时返回false
 func (e *ClientEnd) Call(svcMeth string, args interface{}, reply interface{}) bool {
+	defer func() {
+		if svcMeth == "KVServer.Get" || svcMeth == "KVServer.PutAppend"{
+			log.Printf("call finish0")
+		}
+	}()
 	req := reqMsg{}
 	req.endname = e.endname
 	req.svcMeth = svcMeth
@@ -93,6 +100,9 @@ func (e *ClientEnd) Call(svcMeth string, args interface{}, reply interface{}) bo
 	qe := labgob.NewEncoder(qb)
 	qe.Encode(args)
 	req.args = qb.Bytes()
+	if svcMeth == "KVServer.Get" || svcMeth == "KVServer.PutAppend"{
+		log.Printf("call finish1")
+	}
 
 	//
 	// send the request.
@@ -108,7 +118,14 @@ func (e *ClientEnd) Call(svcMeth string, args interface{}, reply interface{}) bo
 	//
 	// wait for the reply.
 	//
+	if svcMeth == "KVServer.Get" || svcMeth == "KVServer.PutAppend"{
+		log.Printf("call finish2")
+	}
+
 	rep := <-req.replyCh
+	if svcMeth == "KVServer.Get" || svcMeth == "KVServer.PutAppend"{
+		log.Printf("call finish3")
+	}
 	if rep.ok {
 		rb := bytes.NewBuffer(rep.reply)
 		rd := labgob.NewDecoder(rb)

@@ -100,16 +100,23 @@ type Raft struct {
 	enc             *labgob.LabEncoder
 }
 
+type Command struct{
+	Ope string `json:"ope"`
+	Key string `json:"key"`
+	Value string `json:"value"`
+}
+
 type LogCommand struct {
 	RequestId string
+	RequestCnt int64
 	IsGet bool
-	Command interface{}
+	Command
 }
 
 type Log struct {
-	Term    int
-	Index   int
-	Entries interface{}
+	Term    int `json:"term"`
+	Index   int `json:"index"`
+	Entries interface{} `json:"entries"`
 }
 
 type State struct {
@@ -488,11 +495,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
 	term := -1
 	var log *Log
-	logCommand,ok := command.(LogCommand)
-	requestId := ""
-	if ok{
-		requestId = logCommand.RequestId
-	}
 	rf.rwMu.Lock()
 	defer rf.rwMu.Unlock()
 	//其他的一般index都是=rf.state.Logs-1的, 但现在这是个追加log的操作, 追加后index就正确了, emm, 应该咋写都行, 先这样吧
@@ -502,17 +504,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if !ld || died{
 		return -1,-1,false
 	}
-	//get请求多次执行就行, 不需要requestId
-	if len(requestId) != 0 && !logCommand.IsGet{
-		MyPrintf(Info,rf.me,term,index,"receive a put/append request requestId = %v",requestId)
-		state,exist := rf.logStates[requestId]
-		//这个请求已经收到了, 无需重复请求了
-		if exist && state > NOT_FIND{
-			return -1,-1,true
-		}
-	}
-	//leaderCommit := rf.state.CommitIndex
-	//lastLog := rf.state.Logs[index - 1]
 	log = &Log{
 		Term:    term,
 		Index:   index,
@@ -630,6 +621,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	currentTerm, _ := rf.GetState()
 	currentIndex := len(rf.state.Logs) - 1
 	var preLog *Log
+	if args == nil{
+		MyPrintf(Error,rf.me,currentTerm,currentIndex,"args is nil")
+		return
+	}
 	if currentIndex >= args.PrevLogIndex {
 		preLog = rf.state.Logs[args.PrevLogIndex]
 	}
@@ -851,7 +846,6 @@ func (rf *Raft) commit() {
 }
 
 func (rf *Raft) sendHeart(followerIdx int) {
-
 	for {
 		rf.rwMu.RLock()
 		term, ld := rf.GetState()
@@ -917,6 +911,11 @@ func (rf *Raft) SendAppendEntries(followerIdx, term, index, leaderCommit, nextIn
 		if !success {
 			reply = nil
 		}
+		//if reply.ConflictIndex == 0{
+		//	marshal, _ := json.Marshal(args)
+		//	MyPrintf(Error, rf.me,term,index,"reply index is zero, args=%v",string(marshal))
+		//	success = peer.Call("Raft.AppendEntries", args, reply)
+		//}
 		select {
 		case ok <- reply:
 		default:

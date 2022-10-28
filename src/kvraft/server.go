@@ -12,8 +12,9 @@ import (
 	"time"
 )
 
-const IsNotDebug = 1
-const nowLogLevel = Info
+const IsNotDebug = 0
+const nowLogLevel = Critcal
+const clientLogLevel = Info
 type LogLevel int
 const (
 	Debug LogLevel = 0
@@ -40,7 +41,7 @@ func MyPrintf(level LogLevel, me int, format string, a ...interface{}) string {
 	return ans
 }
 func ClientPrintf(level LogLevel, me string, format string, a ...interface{}) string {
-	if level < nowLogLevel{
+	if level < clientLogLevel{
 		return ""
 	}
 	str := fmt.Sprintf("level=%v, server %v ",level, me)
@@ -74,7 +75,7 @@ type KVServer struct {
 	applyCh chan raft.ApplyMsg
 	dead    int32 // set by Kill()
 	database map[string]string //KV数据库
-	commandToResp map[string] chan string//用来兼容请求响应模型和流式处理模型的map, term:index->该log的执行结果
+	commandToResp map[string]chan string//用来兼容请求响应模型和流式处理模型的map, term:index->该log的执行结果
 	logStates map[string]string //记录每个log的返回值
 	maxraftstate int // snapshot if log grows this big
 
@@ -86,25 +87,38 @@ func (kv KVServer) sendRequest(common *raft.LogCommand) (Code,string,string){
 	marshal, _ := json.Marshal(common)
 	//start成功后raft立即开始执行, 如果在raft执行完成并返回结构后commandToResp都没set就会导致execute方法空指针, 因此commandToResp也可以换成普通map了
 	kv.mu.Lock()
-	_, _, isLeader := kv.rf.Start(marshal)
+	//MyPrintf(Info, kv.me,"send in lock")
+	_, term, isLeader := kv.rf.Start(marshal)
 	if kv.killed() || !isLeader{
+		//MyPrintf(Info, kv.me,"send out lock")
 		kv.mu.Unlock()
 		return NOT_LEADER, "", "is not leader"
 	}
 	chId := fmt.Sprintf("%v:%v",common.RequestId,common.RequestCnt)
 	ch := make(chan string,0)
 	MyPrintf(Info,kv.me,"append new channel chId=%v",chId)
+	//kv.commandToResp.Store(chId,ch)
 	kv.commandToResp[chId] = ch
+	//MyPrintf(Info, kv.me,"send out lock")
 	kv.mu.Unlock()
 	for{
-		_, isLeader := kv.rf.GetState()
-		if !isLeader{
+		currentTerm, currentIsLeader := kv.rf.GetState()
+		fmt.Println(currentTerm,currentIsLeader,common.RequestId)
+		if kv.killed() || !currentIsLeader || term != currentTerm{
+			fmt.Println("wrong leader")
 			return NOT_LEADER,"","is not leader"
 		}
+		MyPrintf(Critcal,kv.me,"server wait")
 		select{
 		case val := <-ch:
+			kv.mu.Lock()
+			//kv.commandToResp.Delete(chId)
+			delete(kv.commandToResp,chId)
+			MyPrintf(Info, kv.me, "delete a channel chId=%v,size=%v",chId, len(kv.commandToResp))
+			kv.mu.Unlock()
 			return SUCCESS,val,""
 		default:
+			//MyPrintf(Info, kv.me, "wait raft commit request requestId=%v",common.RequestId)
 		}
 		time.Sleep(WAIT_CHANNEL_RESP_SLEEP_TIME*time.Millisecond)
 	}
@@ -182,6 +196,18 @@ func (kv *KVServer) executeLogs(){
 				requestId := command.RequestId
 				chId := fmt.Sprintf("%v:%v",requestId,command.RequestCnt)
 				kv.mu.Lock()
+				//MyPrintf(Info, kv.me, "exec in lock")
+				//o,exist := kv.commandToResp.Load(chId)
+				//var ch chan string
+				//if exist{
+				//	ch = o.(chan string)
+				//}
+				//_, isLeader := kv.rf.GetState()
+				//if isLeader && !exist{
+				//	MyPrintf(Error, kv.me, "is Leader but not exist")
+				//}
+				//MyPrintf(Info, kv.me, "exec out lock")
+				//todo: 看看是否成功返回了
 				ch,exist := kv.commandToResp[chId]
 				kv.mu.Unlock()
 				key := command.Key
@@ -228,6 +254,7 @@ func (kv *KVServer) executeLogs(){
 				}
 				if exist{
 					ch<-targetVal
+					MyPrintf(Info,kv.me,"success handle a request: requestId=%v, resp=%v",requestId,targetVal)
 				}
 			}
 		}

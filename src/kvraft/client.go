@@ -40,7 +40,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	return ck
 }
 
-//
+//36:10~36:32
 // fetch the current value for a key.
 // returns "" if the key does not exist.
 // keeps trying forever in the face of all other errors.
@@ -64,7 +64,6 @@ func (ck *Clerk) Get(key string) string {
 	reqeustCnt := int64(0)
 	serverCnt := int64(len(ck.servers))
 	requestId := ck.getRequestId()
-	ClientPrintf(Info,ck.me,"send a get request requestId=%v",requestId)
 	args := &GetArgs{
 		Key: key,
 		RequestId: requestId,
@@ -73,14 +72,19 @@ func (ck *Clerk) Get(key string) string {
 	idx := atomic.LoadInt64(&ck.leader)
 	for {
 		args.RequestCnt = reqeustCnt
-		ck.servers[idx].Call("KVServer.Get",args,reply)
+		ClientPrintf(Info,ck.me,"send a get request requestId=%v, requestCnt=%v",requestId,reqeustCnt)
+		ok := ck.servers[idx].Call("KVServer.Get", args, reply)
+		ClientPrintf(Info, ck.me, "asdoipfuasdigyurieqjt;oyi requestId=%v, requestCnt=%v",requestId, reqeustCnt)
 		//不成功就一直重试.
-		if reply.Code == SUCCESS{
+		if ok && reply.Code == SUCCESS{
 			atomic.StoreInt64(&ck.leader,idx)
 			result = reply.Value
+			ClientPrintf(Info,ck.me,"get a get request reply, requestId=%v",requestId)
 			break
 		} else if reply.Code == REPEAT_REQUEST{ //目前设计的get不会算作重复请求
 			ClientPrintf(Warn, ck.me, "send a repeated get request: reqeustId=%v",requestId)
+		} else{
+			ClientPrintf(Info, ck.me, "%v is not leader",idx)
 		}
 		reqeustCnt++
 		idx = (idx+1)%serverCnt
@@ -89,7 +93,8 @@ func (ck *Clerk) Get(key string) string {
 		}
 		time.Sleep(CLIENT_SLEEP_TIME*time.Millisecond)
 	}
-	ck.Remove(requestId)
+	//ck.Remove(requestId)
+	ClientPrintf(Critcal,ck.me,"get request return requestId=%v, key=%v, value=%v",requestId, key,result)
 	return result
 }
 
@@ -117,14 +122,19 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	reply := &PutAppendReply{}
 	idx := atomic.LoadInt64(&ck.leader)
 	for {
+		ClientPrintf(Info,ck.me,"send a %v request requestId=%v, requestCnt=%v",op,requestId,reqeustCnt)
 		args.RequestCnt = reqeustCnt
 		ck.servers[idx].Call("KVServer.PutAppend",args,reply)
+		ClientPrintf(Info,ck.me,"send a %v request requestId=%v, requestCnt=%v finish",op,requestId,reqeustCnt)
 		//不成功就一直重试.
 		if reply.Code == SUCCESS{
 			atomic.StoreInt64(&ck.leader,idx)
+			ClientPrintf(Info,ck.me,"get a %v request reply, requestId=%v",op,requestId)
 			break
 		} else if reply.Code == REPEAT_REQUEST{ //重复了的putAppend请求, 可能会打印多次...到时候看看是否需要修改下
 			ClientPrintf(Warn, ck.me, "send a repeated putAppend request: reqeustId= %v",requestId)
+		} else{
+			ClientPrintf(Info, ck.me, "%v is not leader",idx)
 		}
 		reqeustCnt++
 		idx = (idx+1)%serverCnt
@@ -133,7 +143,8 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		}
 		time.Sleep(CLIENT_SLEEP_TIME*time.Millisecond)
 	}
-	ck.Remove(requestId)
+	//ck.Remove(requestId)
+	ClientPrintf(Info,ck.me,"get/append success requestId=%v",requestId)
 }
 
 func (ck *Clerk) Put(key string, value string) {
@@ -144,29 +155,36 @@ func (ck *Clerk) Append(key string, value string) {
 }
 
 func (ck *Clerk) Remove(removeRequestId string){
-	reqeustCnt := int64(0)
+	defer ClientPrintf(Info,ck.me,"remove success")
+	requestCnt := int64(0)
 	requestId := ck.getRequestId()
 	serverCnt := int64(len(ck.servers))
 	args := &RemoveArgs{
 		RequestId: requestId,
 		RemoveRequestId: removeRequestId,
 	}
+	ClientPrintf(Info, ck.me, "send a remove reqeust, requestId=%v",requestId)
 	reply := &RemoveReply{}
 	idx := atomic.LoadInt64(&ck.leader)
 	for {
-		args.RequestCnt = reqeustCnt
+		ClientPrintf(Info,ck.me,"send a remove request requestId=%v",requestId)
+		args.RequestCnt = requestCnt
 		ck.servers[idx].Call("KVServer.Remove",args,reply)
 		//不成功就一直重试.
 		if reply.Code == SUCCESS{
 			atomic.StoreInt64(&ck.leader,idx)
-			break
+			ClientPrintf(Info, ck.me, "get a remove reqeust reply, requestId=%v", requestId)
+			//break
 		} else if reply.Code == REPEAT_REQUEST{ //重复了的putAppend请求, 可能会打印多次...到时候看看是否需要修改下
 			ClientPrintf(Warn, ck.me, "send a repeated putAppend request: reqeustId= %v",requestId)
+		} else{
+			ClientPrintf(Info, ck.me, "%v is not leader",idx)
 		}
-		reqeustCnt++
+		requestCnt++
 		idx = (idx+1)%serverCnt
-		if reqeustCnt == serverCnt{
+		if requestCnt == serverCnt{
 			ClientPrintf(Error,ck.me,"can not find leader, request=%v",requestId)
 		}
 	}
+	ClientPrintf(Info, ck.me, "remove success requetId=%v",requestId)
 }
