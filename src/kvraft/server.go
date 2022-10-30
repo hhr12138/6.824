@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const IsNotDebug = 0
+const IsNotDebug = 1
 const nowLogLevel = Critcal
 const clientLogLevel = Info
 type LogLevel int
@@ -103,7 +103,7 @@ func (kv KVServer) sendRequest(common *raft.LogCommand) (Code,string,string){
 	kv.mu.Unlock()
 	for{
 		currentTerm, currentIsLeader := kv.rf.GetState()
-		fmt.Println(currentTerm,currentIsLeader,common.RequestId)
+		fmt.Println(currentTerm,currentIsLeader,kv.me,common.RequestId)
 		if kv.killed() || !currentIsLeader || term != currentTerm{
 			fmt.Println("wrong leader")
 			return NOT_LEADER,"","is not leader"
@@ -178,11 +178,10 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 func (kv *KVServer) executeLogs(){
 	for {
-		if kv.killed(){
-			return
-		}
+
 		select {
 		case msg:=<-kv.applyCh:
+			MyPrintf(Critcal,kv.me,"[executeLogs] get msg")
 			if msg.CommandValid{
 				command := &raft.LogCommand{}
 				bytes, ok := msg.Command.([]byte)
@@ -196,6 +195,7 @@ func (kv *KVServer) executeLogs(){
 				requestId := command.RequestId
 				chId := fmt.Sprintf("%v:%v",requestId,command.RequestCnt)
 				kv.mu.Lock()
+				MyPrintf(Critcal,kv.me,"[executeLogs] into lock")
 				//MyPrintf(Info, kv.me, "exec in lock")
 				//o,exist := kv.commandToResp.Load(chId)
 				//var ch chan string
@@ -210,6 +210,7 @@ func (kv *KVServer) executeLogs(){
 				//todo: 看看是否成功返回了
 				ch,exist := kv.commandToResp[chId]
 				kv.mu.Unlock()
+				MyPrintf(Critcal,kv.me,"[executeLogs] out lock")
 				key := command.Key
 				targetVal := ""
 				switch command.Ope {
@@ -253,10 +254,16 @@ func (kv *KVServer) executeLogs(){
 					panic("undefined ope")
 				}
 				if exist{
-					ch<-targetVal
+					MyPrintf(Critcal,kv.me,"[executeLogs] try write to ch")
+					select{
+					case ch<-targetVal:
+					default:
+					}
+					MyPrintf(Critcal,kv.me,"[executeLogs] write to ch success")
 					MyPrintf(Info,kv.me,"success handle a request: requestId=%v, resp=%v",requestId,targetVal)
 				}
 			}
+			MyPrintf(Critcal,kv.me,"[executeLogs] finish")
 		}
 	}
 }
