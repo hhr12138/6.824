@@ -88,14 +88,15 @@ func (kv *KVServer) sendRequest(common *raft.LogCommand) (Code, string, string) 
 	marshal, _ := json.Marshal(common)
 	//start成功后raft立即开始执行, 如果在raft执行完成并返回结构后commandToResp都没set就会导致execute方法空指针, 因此commandToResp也可以换成普通map了
 	requestId := common.RequestId
-	_, _, isLeader := kv.rf.Start(marshal)
+	_, term, isLeader := kv.rf.Start(marshal)
 	if kv.killed() || !isLeader {
 		//kv.mu.Unlock()
 		return NOT_LEADER, "", "is not leader"
 	}
 	for {
-		_, isLeader := kv.rf.GetState()
-		if !isLeader {
+		nowTerm, isLeader := kv.rf.GetState()
+		if nowTerm != term || !isLeader {
+			MyPrintf(Error, kv.me, "term change, term=%v,nowTerm=%v", term, nowTerm)
 			return NOT_LEADER, "", "is not leader"
 		}
 		kv.mu.Lock()
@@ -166,6 +167,11 @@ func (kv *KVServer) executeLogs() {
 	for {
 		msg := <-kv.applyCh
 		kv.mu.Lock()
+		if kv.killed() {
+			MyPrintf(Error, kv.me, "is killed")
+			kv.mu.Unlock()
+			return
+		}
 		if msg.CommandValid {
 			command := &raft.LogCommand{}
 			bytes, ok := msg.Command.([]byte)
