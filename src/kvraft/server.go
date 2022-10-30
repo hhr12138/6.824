@@ -84,23 +84,15 @@ type KVServer struct {
 	// Your definitions here.
 }
 
-func (kv KVServer) sendRequest(common *raft.LogCommand) (Code, string, string) {
+func (kv *KVServer) sendRequest(common *raft.LogCommand) (Code, string, string) {
 	marshal, _ := json.Marshal(common)
 	//start成功后raft立即开始执行, 如果在raft执行完成并返回结构后commandToResp都没set就会导致execute方法空指针, 因此commandToResp也可以换成普通map了
-	//kv.mu.Lock()
 	requestId := common.RequestId
 	_, _, isLeader := kv.rf.Start(marshal)
 	if kv.killed() || !isLeader {
 		//kv.mu.Unlock()
 		return NOT_LEADER, "", "is not leader"
 	}
-	//chId := common.RequestId
-	//ch := make(chan string,0)
-	//MyPrintf(Info,kv.me,"append new channel chId=%v",chId)
-	//kv.commandToResp[chId] = ch
-	//kv.mu.Unlock()
-	//kv.mu.Lock()
-	//defer kv.mu.Unlock()
 	for {
 		_, isLeader := kv.rf.GetState()
 		if !isLeader {
@@ -185,17 +177,7 @@ func (kv *KVServer) executeLogs() {
 				MyPrintf(Error, kv.me, "can not numarshal bytes to raft.LogCommand bytes=%v", bytes)
 			}
 			requestId := command.RequestId
-			//chId := requestId
-			//kv.mu.Lock()
-			//ch,exist := kv.commandToResp[chId]
-			//kv.mu.Unlock()
 			key := command.Key
-			//targetVal := ""
-			//if kv.killed() {
-			//	kv.mu.Unlock()
-			//	return
-			//}
-			//kv.mu.Lock()
 			switch command.Ope {
 			case "Get":
 				if _, exist := kv.logStates[requestId]; !exist {

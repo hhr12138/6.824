@@ -952,7 +952,7 @@ func (rf *Raft) SendAppendEntries(followerIdx, term, index, leaderCommit, nextIn
 					rf.NextIndex[followerIdx] = reply.ConflictIndex
 					rf.MatchIndex[followerIdx] = reply.ConflictIndex - 1
 					//可能会打印很多次, 这很正常, 因为有心跳
-					MyPrintf(Debug, rf.me, term, index, "[sendAppendEntries] success update %v MatchIndex to %v and update nextIndex to %v", followerIdx, reply.ConflictIndex-1, reply.ConflictIndex)
+					MyPrintf(Info, rf.me, term, index, "[sendAppendEntries] success update %v MatchIndex to %v and update nextIndex to %v", followerIdx, reply.ConflictIndex-1, reply.ConflictIndex)
 				}
 			} else if reply.Term > term { //任期过期错误
 				//必须优先更新任期
