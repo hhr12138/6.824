@@ -14,12 +14,14 @@ import (
 
 const IsNotDebug = 1
 const nowLogLevel = Info
+
 type LogLevel int
+
 const (
-	Debug LogLevel = 0
-	Info LogLevel = 1
-	Warn LogLevel = 2
-	Error LogLevel = 3
+	Debug   LogLevel = 0
+	Info    LogLevel = 1
+	Warn    LogLevel = 2
+	Error   LogLevel = 3
 	Critcal LogLevel = 4
 )
 
@@ -31,19 +33,19 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 }
 
 func MyPrintf(level LogLevel, me int, format string, a ...interface{}) string {
-	if level < nowLogLevel{
+	if level < nowLogLevel {
 		return ""
 	}
-	str := fmt.Sprintf("level=%v, server %v ",level, me)
+	str := fmt.Sprintf("level=%v, server %v ", level, me)
 	ans := fmt.Sprintf(str+format, a...)
 	DPrintf(str+format, a...)
 	return ans
 }
 func ClientPrintf(level LogLevel, me string, format string, a ...interface{}) string {
-	if level < nowLogLevel{
+	if level < nowLogLevel {
 		return ""
 	}
-	str := fmt.Sprintf("level=%v, server %v ",level, me)
+	str := fmt.Sprintf("level=%v, server %v ", level, me)
 	ans := fmt.Sprintf(str+format, a...)
 	DPrintf(str+format, a...)
 	return ans
@@ -56,6 +58,7 @@ type Op struct {
 }
 
 type LogState int
+
 //type LogCache struct{
 //	state LogState
 //	value string
@@ -68,60 +71,66 @@ type LogState int
 //)
 
 type KVServer struct {
-	mu      sync.Mutex
-	me      int
-	rf      *raft.Raft
-	applyCh chan raft.ApplyMsg
-	dead    int32 // set by Kill()
+	mu       sync.Mutex
+	me       int
+	rf       *raft.Raft
+	applyCh  chan raft.ApplyMsg
+	dead     int32             // set by Kill()
 	database map[string]string //KV数据库
-	commandToResp map[string] chan string//用来兼容请求响应模型和流式处理模型的map, term:index->该log的执行结果
-	logStates map[string]string //记录每个log的返回值
+	//commandToResp map[string] chan string//用来兼容请求响应模型和流式处理模型的map, term:index->该log的执行结果
+	//logStates    map[string]string //记录每个log的返回值
+	logStates    sync.Map
 	maxraftstate int // snapshot if log grows this big
-
 	// Your definitions here.
 }
 
-
-func (kv KVServer) sendRequest(common *raft.LogCommand) (Code,string,string){
+func (kv KVServer) sendRequest(common *raft.LogCommand) (Code, string, string) {
 	marshal, _ := json.Marshal(common)
 	//start成功后raft立即开始执行, 如果在raft执行完成并返回结构后commandToResp都没set就会导致execute方法空指针, 因此commandToResp也可以换成普通map了
-	kv.mu.Lock()
+	//kv.mu.Lock()
+	requestId := common.RequestId
 	_, _, isLeader := kv.rf.Start(marshal)
-	if kv.killed() || !isLeader{
-		kv.mu.Unlock()
+	if kv.killed() || !isLeader {
+		//kv.mu.Unlock()
 		return NOT_LEADER, "", "is not leader"
 	}
-	chId := fmt.Sprintf("%v:%v",common.RequestId,common.RequestCnt)
-	ch := make(chan string,0)
-	MyPrintf(Info,kv.me,"append new channel chId=%v",chId)
-	kv.commandToResp[chId] = ch
-	kv.mu.Unlock()
-	for{
+	//chId := common.RequestId
+	//ch := make(chan string,0)
+	//MyPrintf(Info,kv.me,"append new channel chId=%v",chId)
+	//kv.commandToResp[chId] = ch
+	//kv.mu.Unlock()
+	//kv.mu.Lock()
+	//defer kv.mu.Unlock()
+	for {
 		_, isLeader := kv.rf.GetState()
-		if !isLeader{
-			return NOT_LEADER,"","is not leader"
+		if !isLeader {
+			return NOT_LEADER, "", "is not leader"
 		}
-		select{
-		case val := <-ch:
-			return SUCCESS,val,""
-		default:
+		//cache, exist := kv.logStates[requestId]
+		cache, exist := kv.logStates.Load(requestId)
+		if exist {
+			//kv.mu.Unlock()
+			return SUCCESS, cache.(string), ""
 		}
-		time.Sleep(WAIT_CHANNEL_RESP_SLEEP_TIME*time.Millisecond)
+		//kv.mu.Unlock()
+		time.Sleep(WAIT_CHANNEL_RESP_SLEEP_TIME * time.Millisecond)
 	}
 }
 
 //remove是幂等的, 因为requestId唯一,对于一个requestId删除几次都无所谓
-func (kv *KVServer) Remove(args *RemoveArgs, reply *RemoveReply){
-	common := &raft.LogCommand{
+func (kv *KVServer) Remove(args *RemoveArgs, reply *RemoveReply) {
+	var common = &raft.LogCommand{
 		RequestId: args.RequestId,
-		RequestCnt: args.RequestCnt,
-		IsGet: true,
+		IsGet:     true,
 		Command: raft.Command{
 			Ope: "Remove",
 			Key: args.RemoveRequestId,
 		},
 	}
 	code, _, err := kv.sendRequest(common)
+	//kv.mu.Lock()
+	//delete(kv.logStates,args.RequestId)
+	//kv.mu.Unlock()
 	reply.Code = code
 	reply.Err = err
 }
@@ -131,8 +140,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	//get请求保证幂等了, 无需记录id
 	common := &raft.LogCommand{
 		RequestId: args.RequestId,
-		RequestCnt: args.RequestCnt,
-		IsGet: true,
+		IsGet:     true,
 		Command: raft.Command{
 			Ope: "Get",
 			Key: args.Key,
@@ -149,11 +157,10 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 	common := &raft.LogCommand{
 		RequestId: args.RequestId,
-		RequestCnt: args.RequestCnt,
-		IsGet: false,
+		IsGet:     false,
 		Command: raft.Command{
-			Ope: args.Op,
-			Key: args.Key,
+			Ope:   args.Op,
+			Key:   args.Key,
 			Value: args.Value,
 		},
 	}
@@ -162,75 +169,75 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	reply.Err = Err(err)
 }
 
-func (kv *KVServer) executeLogs(){
+func (kv *KVServer) executeLogs() {
 	for {
-		if kv.killed(){
-			return
-		}
-		select {
-		case msg:=<-kv.applyCh:
-			if msg.CommandValid{
-				command := &raft.LogCommand{}
-				bytes, ok := msg.Command.([]byte)
-				if !ok{
-					MyPrintf(Error,kv.me,"can not change command to []byte command=%v",command)
-				}
-				err := json.Unmarshal(bytes, command)
-				if err != nil{
-					MyPrintf(Error,kv.me,"can not numarshal bytes to raft.LogCommand bytes=%v",bytes)
-				}
-				requestId := command.RequestId
-				chId := fmt.Sprintf("%v:%v",requestId,command.RequestCnt)
-				kv.mu.Lock()
-				ch,exist := kv.commandToResp[chId]
-				kv.mu.Unlock()
-				key := command.Key
-				targetVal := ""
-				switch command.Ope {
-				case "Get":
-					if cache,exist := kv.logStates[requestId];exist && len(cache) != 0{
-						targetVal = cache
-						MyPrintf(Warn,kv.me,"repeat get request requestId=%v, key=%v, value=%v",requestId,key,cache)
-					}else{
-						value := kv.database[key]
-						targetVal = value
-						kv.logStates[requestId] = value
-						MyPrintf(Info,kv.me,"get request success requestId=%v, key=%v, value=%v",requestId,key,value)
-					}
-				case "Put":
-					if cache,exist := kv.logStates[requestId];exist && len(cache) != 0{
-						targetVal = cache
-						MyPrintf(Warn,kv.me,"repeat put request requestId=%v, key=%v, value=%v",requestId,key,cache)
-					} else{
-						value := command.Value
-						kv.database[key] = value
-						kv.logStates[requestId] = "success"
-						targetVal = "success"
-					}
-				case "Append":
-					if cache,exist := kv.logStates[requestId];exist && len(cache) != 0{
-						targetVal = cache
-						MyPrintf(Warn,kv.me,"repeat append request requestId=%v, key=%v, value=%v",requestId,key,cache)
-					} else{
-						value := command.Value
-						val := kv.database[key]
-						val += value
-						kv.database[key] = val
-						kv.logStates[requestId] = "success"
-						targetVal = "success"
-					}
-				case "Remove":
-					delete(kv.logStates, requestId)
-					targetVal = "success"
-				default:
-					MyPrintf(Critcal,kv.me,"undefined ope")
-					panic("undefined ope")
-				}
-				if exist{
-					ch<-targetVal
-				}
+		msg := <-kv.applyCh
+		//kv.mu.Lock()
+		if msg.CommandValid {
+			command := &raft.LogCommand{}
+			bytes, ok := msg.Command.([]byte)
+			if !ok {
+				MyPrintf(Error, kv.me, "can not change command to []byte command=%v", command)
 			}
+			err := json.Unmarshal(bytes, command)
+			if err != nil {
+				MyPrintf(Error, kv.me, "can not numarshal bytes to raft.LogCommand bytes=%v", bytes)
+			}
+			requestId := command.RequestId
+			//chId := requestId
+			//kv.mu.Lock()
+			//ch,exist := kv.commandToResp[chId]
+			//kv.mu.Unlock()
+			key := command.Key
+			//targetVal := ""
+			//if kv.killed() {
+			//	kv.mu.Unlock()
+			//	return
+			//}
+			//kv.mu.Lock()
+			switch command.Ope {
+			case "Get":
+				//if _, exist := kv.logStates[requestId]; !exist {
+				if _, exist := kv.logStates.Load(requestId); !exist {
+					value := kv.database[key]
+					//targetVal = value
+					//kv.logStates[requestId] = value
+					kv.logStates.Store(requestId, value)
+					MyPrintf(Info, kv.me, "get request success requestId=%v, key=%v, value=%v", requestId, key, value)
+				}
+			case "Put":
+				//if _, exist := kv.logStates[requestId]; !exist {
+				if _, exist := kv.logStates.Load(requestId); !exist {
+					value := command.Value
+					kv.database[key] = value
+					//kv.logStates[requestId] = "success"
+					kv.logStates.Store(requestId, "success")
+					//targetVal = "success"
+				}
+			case "Append":
+				//if _, exist := kv.logStates[requestId]; !exist {
+				if _, exist := kv.logStates.Load(requestId); !exist {
+					value := command.Value
+					val := kv.database[key]
+					val += value
+					kv.database[key] = val
+					//kv.logStates[requestId] = "success"
+					kv.logStates.Store(requestId, "success")
+					//targetVal = "success"
+				}
+			case "Remove":
+				//delete(kv.logStates, key)
+				kv.logStates.Delete(key)
+				//targetVal = "success"
+				//kv.logStates[requestId] = "success"
+				kv.logStates.Store(requestId, "success")
+			default:
+				MyPrintf(Critcal, kv.me, "undefined ope")
+				panic("undefined ope")
+			}
+			//kv.mu.Unlock()
 		}
+		//kv.mu.Unlock()
 	}
 }
 
@@ -248,7 +255,7 @@ func (kv *KVServer) Kill() {
 	atomic.StoreInt32(&kv.dead, 1)
 	kv.rf.Kill()
 	// Your code here, if desired.
-	MyPrintf(Info, kv.me,"died")
+	MyPrintf(Info, kv.me, "died")
 }
 
 func (kv *KVServer) killed() bool {
@@ -283,9 +290,9 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-	kv.logStates = make(map[string]string,0)
-	kv.database = make(map[string]string,0)
-	kv.commandToResp = make(map[string] chan string)
+	//kv.logStates = make(map[string]string, 0)
+	kv.database = make(map[string]string, 0)
+	//kv.commandToResp = make(map[string] chan string)
 
 	// You may need initialization code here.
 	go kv.executeLogs()

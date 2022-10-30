@@ -54,15 +54,16 @@ type ApplyMsg struct {
 }
 
 type LogState int
+
 //type LogCache struct{
 //	state LogState
 //	value interface{}
 //}
 
-const(
-	NOT_FIND LogState = 0
+const (
+	NOT_FIND  LogState = 0
 	COMMITTED LogState = 1
-	WORKING LogState = 2
+	WORKING   LogState = 2
 )
 
 func init() {
@@ -86,24 +87,30 @@ type Raft struct {
 	state       *State //当前副本的状态
 	CommitIndex int    //当前服务器提交的最大索引
 	//LogCommitIndex int         //存在内容的日志的最大索引
-	LastApplied     int           //当前服务器应用的最大条目
-	Identity        int           //身份, 0->leader, 1->follower, 2->candidate
-	NextIndex       []int         //每个follower下一个log entries的索引, 在当选leader时初始化为leader的最后一个索引+1(即len(Logs))
-	MatchIndex      []int         //已经同步到follower的日志
-	applyCh         chan ApplyMsg // 返回给tester告诉他该消息以提交
+	LastApplied int           //当前服务器应用的最大条目
+	Identity    int           //身份, 0->leader, 1->follower, 2->candidate
+	NextIndex   []int         //每个follower下一个log entries的索引, 在当选leader时初始化为leader的最后一个索引+1(即len(Logs))
+	MatchIndex  []int         //已经同步到follower的日志
+	applyCh     chan ApplyMsg // 返回给tester告诉他该消息以提交
 	//appendEntriesCh chan []string //发送给leader的AppendEntries, 用来从里面取东西更新ld的log[]
-	logStates map[string]LogState //记录每个log的状态, id->状态, NOT_FIND: 未到, COMMITTED: 已提交(已删除但没物理删除的也按照已提交算吧, 毕竟不重复执行就行, 按原本返回即可), WORKING: 执行中
-	voteTimeout     int64         //选举超时
-	rwMu            sync.RWMutex  //读写锁
-	buf             *bytes.Buffer
-	dec             *labgob.LabDecoder
-	enc             *labgob.LabEncoder
+	logStates   map[string]LogState //记录每个log的状态, id->状态, NOT_FIND: 未到, COMMITTED: 已提交(已删除但没物理删除的也按照已提交算吧, 毕竟不重复执行就行, 按原本返回即可), WORKING: 执行中
+	voteTimeout int64               //选举超时
+	rwMu        sync.RWMutex        //读写锁
+	buf         *bytes.Buffer
+	dec         *labgob.LabDecoder
+	enc         *labgob.LabEncoder
 }
 
 type LogCommand struct {
 	RequestId string
-	IsGet bool
-	Command interface{}
+	IsGet     bool
+	Command
+}
+
+type Command struct {
+	Ope   string
+	Key   string
+	Value string
 }
 
 type Log struct {
@@ -126,7 +133,6 @@ func (rf *Raft) termAndIdentityCheck(identity, term, nowTerm, index int) bool {
 	}
 	return true
 }
-
 
 // term 选举发起时的任期
 func (rf *Raft) StartVote(term, index int, endTime int64, lastLog *Log) {
@@ -488,9 +494,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
 	term := -1
 	var log *Log
-	logCommand,ok := command.(LogCommand)
+	logCommand, ok := command.(LogCommand)
 	requestId := ""
-	if ok{
+	if ok {
 		requestId = logCommand.RequestId
 	}
 	rf.rwMu.Lock()
@@ -499,16 +505,16 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index = len(rf.state.Logs)
 	term, ld := rf.GetState()
 	died := rf.killed()
-	if !ld || died{
-		return -1,-1,false
+	if !ld || died {
+		return -1, -1, false
 	}
 	//get请求多次执行就行, 不需要requestId
-	if len(requestId) != 0 && !logCommand.IsGet{
-		MyPrintf(Info,rf.me,term,index,"receive a put/append request requestId = %v",requestId)
-		state,exist := rf.logStates[requestId]
+	if len(requestId) != 0 && !logCommand.IsGet {
+		MyPrintf(Info, rf.me, term, index, "receive a put/append request requestId = %v", requestId)
+		state, exist := rf.logStates[requestId]
 		//这个请求已经收到了, 无需重复请求了
-		if exist && state > NOT_FIND{
-			return -1,-1,true
+		if exist && state > NOT_FIND {
+			return -1, -1, true
 		}
 	}
 	//leaderCommit := rf.state.CommitIndex
@@ -525,18 +531,18 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 }
 
 //lab3
-func(rf *Raft) initLogStates() map[string]LogState{
+func (rf *Raft) initLogStates() map[string]LogState {
 	resp := make(map[string]LogState)
 	logs := rf.state.Logs
-	for _,log := range logs{
-		entry,ok := log.Entries.(LogCommand)
-		if !ok{
+	for _, log := range logs {
+		entry, ok := log.Entries.(LogCommand)
+		if !ok {
 			continue
 		}
 		var s LogState
-		if log.Index < rf.CommitIndex{
+		if log.Index < rf.CommitIndex {
 			s = COMMITTED
-		} else{
+		} else {
 			s = WORKING
 		}
 		resp[entry.RequestId] = s
