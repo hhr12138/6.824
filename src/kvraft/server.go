@@ -78,8 +78,8 @@ type KVServer struct {
 	dead     int32             // set by Kill()
 	database map[string]string //KV数据库
 	//commandToResp map[string] chan string//用来兼容请求响应模型和流式处理模型的map, term:index->该log的执行结果
-	//logStates    map[string]string //记录每个log的返回值
-	logStates    sync.Map
+	logStates map[string]string //记录每个log的返回值
+	//logStates    sync.Map
 	maxraftstate int // snapshot if log grows this big
 	// Your definitions here.
 }
@@ -106,13 +106,14 @@ func (kv KVServer) sendRequest(common *raft.LogCommand) (Code, string, string) {
 		if !isLeader {
 			return NOT_LEADER, "", "is not leader"
 		}
-		//cache, exist := kv.logStates[requestId]
-		cache, exist := kv.logStates.Load(requestId)
+		kv.mu.Lock()
+		cache, exist := kv.logStates[requestId]
+		//cache, exist := kv.logStates.Load(requestId)
 		if exist {
-			//kv.mu.Unlock()
-			return SUCCESS, cache.(string), ""
+			kv.mu.Unlock()
+			return SUCCESS, cache, ""
 		}
-		//kv.mu.Unlock()
+		kv.mu.Unlock()
 		time.Sleep(WAIT_CHANNEL_RESP_SLEEP_TIME * time.Millisecond)
 	}
 }
@@ -172,7 +173,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 func (kv *KVServer) executeLogs() {
 	for {
 		msg := <-kv.applyCh
-		//kv.mu.Lock()
+		kv.mu.Lock()
 		if msg.CommandValid {
 			command := &raft.LogCommand{}
 			bytes, ok := msg.Command.([]byte)
@@ -197,47 +198,47 @@ func (kv *KVServer) executeLogs() {
 			//kv.mu.Lock()
 			switch command.Ope {
 			case "Get":
-				//if _, exist := kv.logStates[requestId]; !exist {
-				if _, exist := kv.logStates.Load(requestId); !exist {
+				if _, exist := kv.logStates[requestId]; !exist {
+					//if _, exist := kv.logStates.Load(requestId); !exist {
 					value := kv.database[key]
 					//targetVal = value
-					//kv.logStates[requestId] = value
-					kv.logStates.Store(requestId, value)
+					kv.logStates[requestId] = value
+					//kv.logStates.Store(requestId, value)
 					MyPrintf(Info, kv.me, "get request success requestId=%v, key=%v, value=%v", requestId, key, value)
 				}
 			case "Put":
-				//if _, exist := kv.logStates[requestId]; !exist {
-				if _, exist := kv.logStates.Load(requestId); !exist {
+				if _, exist := kv.logStates[requestId]; !exist {
+					//if _, exist := kv.logStates.Load(requestId); !exist {
 					value := command.Value
 					kv.database[key] = value
-					//kv.logStates[requestId] = "success"
-					kv.logStates.Store(requestId, "success")
+					kv.logStates[requestId] = "success"
+					//kv.logStates.Store(requestId, "success")
 					//targetVal = "success"
 				}
 			case "Append":
-				//if _, exist := kv.logStates[requestId]; !exist {
-				if _, exist := kv.logStates.Load(requestId); !exist {
+				if _, exist := kv.logStates[requestId]; !exist {
+					//if _, exist := kv.logStates.Load(requestId); !exist {
 					value := command.Value
 					val := kv.database[key]
 					val += value
 					kv.database[key] = val
-					//kv.logStates[requestId] = "success"
-					kv.logStates.Store(requestId, "success")
+					kv.logStates[requestId] = "success"
+					//kv.logStates.Store(requestId, "success")
 					//targetVal = "success"
 				}
 			case "Remove":
-				//delete(kv.logStates, key)
-				kv.logStates.Delete(key)
+				delete(kv.logStates, key)
+				//kv.logStates.Delete(key)
 				//targetVal = "success"
-				//kv.logStates[requestId] = "success"
-				kv.logStates.Store(requestId, "success")
+				kv.logStates[requestId] = "success"
+				//kv.logStates.Store(requestId, "success")
 			default:
 				MyPrintf(Critcal, kv.me, "undefined ope")
 				panic("undefined ope")
 			}
 			//kv.mu.Unlock()
 		}
-		//kv.mu.Unlock()
+		kv.mu.Unlock()
 	}
 }
 
@@ -290,7 +291,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-	//kv.logStates = make(map[string]string, 0)
+	kv.logStates = make(map[string]string, 0)
 	kv.database = make(map[string]string, 0)
 	//kv.commandToResp = make(map[string] chan string)
 
