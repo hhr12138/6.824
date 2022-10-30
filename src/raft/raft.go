@@ -22,6 +22,7 @@ import (
 	"../labrpc"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -54,15 +55,16 @@ type ApplyMsg struct {
 }
 
 type LogState int
+
 //type LogCache struct{
 //	state LogState
 //	value interface{}
 //}
 
-const(
-	NOT_FIND LogState = 0
+const (
+	NOT_FIND  LogState = 0
 	COMMITTED LogState = 1
-	WORKING LogState = 2
+	WORKING   LogState = 2
 )
 
 func init() {
@@ -86,36 +88,36 @@ type Raft struct {
 	state       *State //当前副本的状态
 	CommitIndex int    //当前服务器提交的最大索引
 	//LogCommitIndex int         //存在内容的日志的最大索引
-	LastApplied     int           //当前服务器应用的最大条目
-	Identity        int           //身份, 0->leader, 1->follower, 2->candidate
-	NextIndex       []int         //每个follower下一个log entries的索引, 在当选leader时初始化为leader的最后一个索引+1(即len(Logs))
-	MatchIndex      []int         //已经同步到follower的日志
-	applyCh         chan ApplyMsg // 返回给tester告诉他该消息以提交
+	LastApplied int           //当前服务器应用的最大条目
+	Identity    int           //身份, 0->leader, 1->follower, 2->candidate
+	NextIndex   []int         //每个follower下一个log entries的索引, 在当选leader时初始化为leader的最后一个索引+1(即len(Logs))
+	MatchIndex  []int         //已经同步到follower的日志
+	applyCh     chan ApplyMsg // 返回给tester告诉他该消息以提交
 	//appendEntriesCh chan []string //发送给leader的AppendEntries, 用来从里面取东西更新ld的log[]
-	logStates map[string]LogState //记录每个log的状态, id->状态, NOT_FIND: 未到, COMMITTED: 已提交(已删除但没物理删除的也按照已提交算吧, 毕竟不重复执行就行, 按原本返回即可), WORKING: 执行中
-	voteTimeout     int64         //选举超时
-	rwMu            sync.RWMutex  //读写锁
-	buf             *bytes.Buffer
-	dec             *labgob.LabDecoder
-	enc             *labgob.LabEncoder
+	logStates   map[string]LogState //记录每个log的状态, id->状态, NOT_FIND: 未到, COMMITTED: 已提交(已删除但没物理删除的也按照已提交算吧, 毕竟不重复执行就行, 按原本返回即可), WORKING: 执行中
+	voteTimeout int64               //选举超时
+	rwMu        sync.RWMutex        //读写锁
+	buf         *bytes.Buffer
+	dec         *labgob.LabDecoder
+	enc         *labgob.LabEncoder
 }
 
-type Command struct{
-	Ope string `json:"ope"`
-	Key string `json:"key"`
+type Command struct {
+	Ope   string `json:"ope"`
+	Key   string `json:"key"`
 	Value string `json:"value"`
 }
 
 type LogCommand struct {
-	RequestId string
+	RequestId  string
 	RequestCnt int64
-	IsGet bool
+	IsGet      bool
 	Command
 }
 
 type Log struct {
-	Term    int `json:"term"`
-	Index   int `json:"index"`
+	Term    int         `json:"term"`
+	Index   int         `json:"index"`
 	Entries interface{} `json:"entries"`
 }
 
@@ -133,7 +135,6 @@ func (rf *Raft) termAndIdentityCheck(identity, term, nowTerm, index int) bool {
 	}
 	return true
 }
-
 
 // term 选举发起时的任期
 func (rf *Raft) StartVote(term, index int, endTime int64, lastLog *Log) {
@@ -204,12 +205,14 @@ func (rf *Raft) StartVote(term, index int, endTime int64, lastLog *Log) {
 				//收到了大部分投票
 				if success*2 > len(rf.peers) {
 					rf.rwMu.Lock()
+					MyPrintf(Critcal, rf.me, -1, -1, "[startVote] into lock")
 					//真实变更时需要进行二次检测
 					nowTerm := rf.state.CurrentTerm
 					identity := rf.Identity
 					// "在一个任期内，如果收到大多数服务器投票，candidate就赢得了选举。"
 					//如果任期改变了, 那么这次选举失效
 					if !rf.termAndIdentityCheck(identity, term, nowTerm, index) {
+						MyPrintf(Critcal, rf.me, -1, -1, "[startVote] out lock")
 						rf.rwMu.Unlock()
 						return
 					}
@@ -233,6 +236,7 @@ func (rf *Raft) StartVote(term, index int, endTime int64, lastLog *Log) {
 					rf.NextIndex = nextIndexs
 					rf.Identity = 0
 					MyPrintf(Info, rf.me, term, index, "[StartVote] vote success")
+					MyPrintf(Critcal, rf.me, -1, -1, "[startVote] out lock")
 					rf.rwMu.Unlock()
 					//todo: 明天重新写下
 					go rf.commit()
@@ -260,15 +264,18 @@ func (rf *Raft) StartVote(term, index int, endTime int64, lastLog *Log) {
 func (rf *Raft) heartCheck() {
 	for {
 		rf.rwMu.RLock()
+		MyPrintf(Critcal, rf.me, -1, -1, "[heartCheck] into ReadLock")
 		index := len(rf.state.Logs) - 1
 		term, ld := rf.GetState()
 		died := rf.killed()
 		if died {
 			MyPrintf(Info, rf.me, term, index, "return [heartCheck]")
+			MyPrintf(Critcal, rf.me, -1, -1, "[heartCheck] out ReadLock")
 			rf.rwMu.RUnlock()
 			return
 		}
 		voteTimeout := rf.voteTimeout
+		MyPrintf(Critcal, rf.me, -1, -1, "[heartCheck] out ReadLock")
 		rf.rwMu.RUnlock()
 		//ld没必要检测心跳
 		if !ld {
@@ -280,9 +287,11 @@ func (rf *Raft) heartCheck() {
 				//发起选举
 				nextVoteTimeout := NowMillSecond() + HEART_TIME*TIMEOUT_CNT + rand.Int63n(HEART_TIME*TIMEOUT_CNT)
 				rf.rwMu.Lock()
+				MyPrintf(Critcal, rf.me, -1, -1, "[heartcheck2] into lock")
 				//判断下任期是否发生了改变, 如果改变了那就不开始选举
 				nowTerm := rf.state.CurrentTerm
 				if nowTerm != term {
+					MyPrintf(Critcal, rf.me, -1, -1, "[heartcheck2] out lock")
 					rf.rwMu.Unlock()
 					time.Sleep(GetMillSecond(HEART_TIME))
 					continue
@@ -294,6 +303,7 @@ func (rf *Raft) heartCheck() {
 				rf.Identity = 2
 				lastLog := rf.state.Logs[len(rf.state.Logs)-1]
 				//MyPrintf(rf.me, term, index, "[heartCheck], update identity=candidate, update voteTimeout=%v", nextVoteTimeout)
+				MyPrintf(Critcal, rf.me, -1, -1, "[heartcheck2] out lock")
 				rf.rwMu.Unlock()
 				go rf.StartVote(term+1, index, nextVoteTimeout, lastLog)
 			}
@@ -377,8 +387,12 @@ type RequestVoteReply struct {
 // 请求别的服务器投票的方法
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
-	defer rf.rwMu.Unlock()
+	defer func() {
+		MyPrintf(Critcal, rf.me, -1, -1, "[RequestVote] out lock")
+		rf.rwMu.Unlock()
+	}()
 	rf.rwMu.Lock()
+	MyPrintf(Critcal, rf.me, -1, -1, "[RequestVote] into lock")
 	term, _ := rf.GetState()
 	index := len(rf.state.Logs) - 1
 	log := rf.state.Logs[index]
@@ -496,13 +510,17 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	term := -1
 	var log *Log
 	rf.rwMu.Lock()
-	defer rf.rwMu.Unlock()
+	MyPrintf(Critcal, rf.me, -1, -1, "[Start] into lock")
+	defer func() {
+		MyPrintf(Critcal, rf.me, -1, -1, "[Start] out lock")
+		rf.rwMu.Unlock()
+	}()
 	//其他的一般index都是=rf.state.Logs-1的, 但现在这是个追加log的操作, 追加后index就正确了, emm, 应该咋写都行, 先这样吧
 	index = len(rf.state.Logs)
 	term, ld := rf.GetState()
 	died := rf.killed()
-	if !ld || died{
-		return -1,-1,false
+	if !ld || died {
+		return -1, -1, false
 	}
 	log = &Log{
 		Term:    term,
@@ -516,18 +534,18 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 }
 
 //lab3
-func(rf *Raft) initLogStates() map[string]LogState{
+func (rf *Raft) initLogStates() map[string]LogState {
 	resp := make(map[string]LogState)
 	logs := rf.state.Logs
-	for _,log := range logs{
-		entry,ok := log.Entries.(LogCommand)
-		if !ok{
+	for _, log := range logs {
+		entry, ok := log.Entries.(LogCommand)
+		if !ok {
 			continue
 		}
 		var s LogState
-		if log.Index < rf.CommitIndex{
+		if log.Index < rf.CommitIndex {
 			s = COMMITTED
-		} else{
+		} else {
 			s = WORKING
 		}
 		resp[entry.RequestId] = s
@@ -538,16 +556,19 @@ func(rf *Raft) initLogStates() map[string]LogState{
 func (rf *Raft) sendLog(followerIdx int) {
 	for {
 		rf.rwMu.RLock()
+		MyPrintf(Critcal, rf.me, -1, -1, "[sendLog] into ReadLock")
 		term, ld := rf.GetState()
 		index := len(rf.state.Logs) - 1
 		died := rf.killed()
 		if !ld || died {
 			MyPrintf(Info, rf.me, term, index, "[sendLog] return isLeader=%v,died=%v", ld, died)
+			MyPrintf(Critcal, rf.me, -1, -1, "[sendLog] out ReadLock")
 			rf.rwMu.RUnlock()
 			return
 		}
 		leaderCommit := rf.CommitIndex
 		if len(rf.NextIndex) == 0 {
+			MyPrintf(Critcal, rf.me, -1, -1, "[sendLog] out ReadLock")
 			rf.rwMu.RUnlock()
 			MyPrintf(Info, rf.me, term, index, "[sendLog] leader doing init")
 			time.Sleep(time.Millisecond * time.Duration(SLEEP_TIME))
@@ -560,6 +581,7 @@ func (rf *Raft) sendLog(followerIdx int) {
 			panic("err : [sendLog] nextIndex == 0")
 		}
 		if nextIndex > index {
+			MyPrintf(Critcal, rf.me, -1, -1, "[sendLog] out ReadLock")
 			rf.rwMu.RUnlock()
 			//MyPrintf(rf.me,term,index,"[sendLog] nextIndex >= len(logs)")
 			time.Sleep(time.Millisecond * time.Duration(SLEEP_TIME))
@@ -575,11 +597,12 @@ func (rf *Raft) sendLog(followerIdx int) {
 			logs = append(logs, log)
 		}
 		lastLog := rf.state.Logs[nextIndex-1]
+		MyPrintf(Critcal, rf.me, -1, -1, "[sendLog] out ReadLock")
 		rf.rwMu.RUnlock()
 
 		//这个打印在过了之后去掉
 		//bs,_ := json.Marshal(logs[0].Entries)
-		//MyPrintf(rf.me,term,index,"[sendLog] send log %v to %v, len(bs)=%v", logs[0].Index,followerIdx,len(bs))
+		MyPrintf(Critcal, rf.me, term, index, "[sendLog] send log %v to %v", logs[0].Index, followerIdx)
 
 		sleepTime, _ := rf.SendAppendEntries(followerIdx, term, index, leaderCommit, nextIndex, matchIndex, logs, lastLog)
 		if sleepTime != 0 {
@@ -614,17 +637,20 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.ConflictIndex = args.PrevLogIndex + 1
 		return
 	}
-	defer rf.rwMu.Unlock()
+	fmt.Printf("%v get a request\n", rf.me)
 	rf.rwMu.Lock()
+	MyPrintf(Critcal, rf.me, -1, -1, "[AppendEntries] into lock")
+	fmt.Printf("%v into lock\n", rf.me)
+	defer func() {
+		MyPrintf(Critcal, rf.me, -1, -1, "[AppendEntries] out lock")
+		rf.rwMu.Unlock()
+	}()
 	reply.Id = rf.me
 	//以收到时为准, 因为rf的CurrentTerm可能会被其他携程更新
 	currentTerm, _ := rf.GetState()
+	MyPrintf(Critcal, rf.me, -1, -1, "[AppendEntries] out getState")
 	currentIndex := len(rf.state.Logs) - 1
 	var preLog *Log
-	if args == nil{
-		MyPrintf(Error,rf.me,currentTerm,currentIndex,"args is nil")
-		return
-	}
 	if currentIndex >= args.PrevLogIndex {
 		preLog = rf.state.Logs[args.PrevLogIndex]
 	}
@@ -650,6 +676,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.state.CurrentTerm = args.Term
 		rf.state.VotedFor = -1
 		rf.persist()
+		MyPrintf(Critcal, rf.me, -1, -1, "[AppendEntries] out persist")
 		if identity := rf.Identity; identity != 1 {
 			rf.Identity = 1
 			MyPrintf(Info, rf.me, currentTerm, currentIndex, "[AppendEntries] update %v to follower", identity)
@@ -690,6 +717,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.state.Logs = append(rf.state.Logs, newLog)
 	}
 	rf.persist()
+	MyPrintf(Critcal, rf.me, -1, -1, "[AppendEntries] out 1persist1")
 	//更新commitIndex, 并提交
 	if args.LeaderCommit > rf.CommitIndex {
 		commitIndex := Min(args.LeaderCommit, len(rf.state.Logs)-1)
@@ -705,7 +733,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				logBs, _ := json.Marshal(log)
 				MyPrintf(Error, rf.me, currentTerm, currentIndex, "[appendentries] index err, applymsg := %v, log := %v, i = %v", string(applyBs), string(logBs), i)
 			}
+			//todo: 问题很可能在这里
 			rf.applyCh <- applyMsg
+			MyPrintf(Critcal, rf.me, -1, -1, "[AppendEntries] out applyMsg")
 			MyPrintf(Info, rf.me, currentTerm, commitIndex, "[commit] apply msg %v, command=%v, msgTerm=%v", applyMsg.CommandIndex, applyMsg.Command, rf.state.Logs[i].Term)
 		}
 		rf.CommitIndex = commitIndex
@@ -795,9 +825,11 @@ func (rf *Raft) commit() {
 	for {
 		flag := false
 		rf.rwMu.RLock()
+		MyPrintf(Critcal, rf.me, -1, -1, "[commit] into ReadLock")
 		term, ld := rf.GetState()
 		index := len(rf.state.Logs)
 		if !ld || rf.killed() {
+			MyPrintf(Critcal, rf.me, -1, -1, "[commit] out ReadLock")
 			rf.rwMu.RUnlock()
 			MyPrintf(Info, rf.me, term, index, "[commit] exit")
 			return
@@ -818,10 +850,12 @@ func (rf *Raft) commit() {
 			flag = true
 		}
 		commitLog := rf.state.Logs[commitIndex]
+		MyPrintf(Critcal, rf.me, -1, -1, "[commit] out ReadLock")
 		rf.rwMu.RUnlock()
 		//有新条目需要提交, 每个leader只提交自己任期的日志(见Figure 8)
 		if flag && commitLog.Term == term {
 			rf.rwMu.Lock()
+			MyPrintf(Critcal, rf.me, -1, -1, "[commit] into lock")
 			currentTerm, _ := rf.GetState()
 			if term == currentTerm {
 				MyPrintf(Info, rf.me, term, commitIndex, "[commit] %v commited", commitIndex)
@@ -831,7 +865,12 @@ func (rf *Raft) commit() {
 						Command:      rf.state.Logs[i].Entries,
 						CommandIndex: i,
 					}
+					//select{
+					//	case rf.applyCh <- applyMsg:
+					//default:
+					//}
 					rf.applyCh <- applyMsg
+					MyPrintf(Critcal, rf.me, -1, -1, "[commit] out applyMsg")
 					MyPrintf(Info, rf.me, term, commitIndex, "[commit] apply msg %v, command=%v, msgTerm=%v", applyMsg.CommandIndex, applyMsg.Command, rf.state.Logs[i].Term)
 				}
 				rf.CommitIndex = commitIndex
@@ -839,6 +878,7 @@ func (rf *Raft) commit() {
 					rf.LastApplied = rf.CommitIndex
 				}
 			}
+			MyPrintf(Critcal, rf.me, -1, -1, "[commit] out lock")
 			rf.rwMu.Unlock()
 		}
 		time.Sleep(time.Millisecond * HEART_TIME)
@@ -848,9 +888,11 @@ func (rf *Raft) commit() {
 func (rf *Raft) sendHeart(followerIdx int) {
 	for {
 		rf.rwMu.RLock()
+		MyPrintf(Critcal, rf.me, -1, -1, "[sendHeart] into ReadLock")
 		term, ld := rf.GetState()
 		index := len(rf.state.Logs) - 1
 		if !ld {
+			MyPrintf(Critcal, rf.me, -1, -1, "[sendHeart] out ReadLock")
 			rf.rwMu.RUnlock()
 			MyPrintf(Info, rf.me, term, index, "stop send heart")
 			return
@@ -862,7 +904,9 @@ func (rf *Raft) sendHeart(followerIdx int) {
 			MyPrintf(Error, rf.me, term, index, "index out of range, nextIndex = %v, me.state=%v", nextIndex, rf.Identity)
 		}
 		lastLog := rf.state.Logs[nextIndex-1]
+		MyPrintf(Critcal, rf.me, -1, -1, "[sendHeart] out ReadLock")
 		rf.rwMu.RUnlock()
+		fmt.Printf("%v try to send heart to %v\n", rf.me, followerIdx)
 		rf.SendAppendEntries(followerIdx, term, index, leaderCommit, nextIndex, matchIndex, nil, lastLog)
 		time.Sleep(GetMillSecond(HEART_TIME))
 	}
@@ -879,6 +923,7 @@ func (rf *Raft) SendAppendEntries(followerIdx, term, index, leaderCommit, nextIn
 	//超时时间为election time(选举超时)的1/10以下
 	go func() {
 		sleepTime := GetMillSecond(HEART_TIME*TIMEOUT_CNT) / 10
+		//sleepTime := time.Duration(2147483647)
 		time.Sleep(sleepTime)
 		select {
 		case end <- true:
@@ -923,17 +968,19 @@ func (rf *Raft) SendAppendEntries(followerIdx, term, index, leaderCommit, nextIn
 	}()
 	select {
 	case <-end:
-		//MyPrintf(rf.me, term, index, "[SendAppendEntries] rpc to %v timeout", followerIdx)
+		MyPrintf(Warn, rf.me, term, index, "[SendAppendEntries] rpc to %v timeout", followerIdx)
 		return SLEEP_TIME, nil
 	case reply := <-ok:
 		if reply == nil {
-			//MyPrintf(rf.me, term, index, "[SendAppendEntries] rpc timeout")
+			MyPrintf(Warn, rf.me, term, index, "[SendAppendEntries] rpc timeout call")
 			return SLEEP_TIME, nil
 		} else {
 			rf.rwMu.Lock()
+			MyPrintf(Critcal, rf.me, -1, -1, "[sendAppendEntries] into lock")
 			nowTerm, ld := rf.GetState()
 			//二次检查
 			if !ld || nowTerm != term {
+				MyPrintf(Critcal, rf.me, -1, -1, "[sendAppendEntries] out lock")
 				rf.rwMu.Unlock()
 				return 0, nil
 			}
@@ -956,24 +1003,25 @@ func (rf *Raft) SendAppendEntries(followerIdx, term, index, leaderCommit, nextIn
 				//收到更改Term, 退位
 				MyPrintf(Info, rf.me, term, index, "[sendAppendEntries] get%v highter term %v, update to follower", followerIdx, reply.Term)
 				rf.Identity = 1
-			} else {
-				if nowNextIndex == nextIndex {
-					//日志不匹配错误, 回退到期望的日志, todo: 日后可能需要优化, lab3的时候, 如果过不去需要改成term+index的形式
-					if reply.ConflictIndex > rf.NextIndex[followerIdx] {
-						replyBs, _ := json.Marshal(reply)
-						MyPrintf(Error, rf.me, term, index, "[SendAppendEntries], confilictIndex err reply=%v", string(replyBs))
-					}
-					MyPrintf(Error, rf.me, term, index, "[SendAppendEntries] backup %v log %v to %v", followerIdx, rf.NextIndex[followerIdx], reply.ConflictIndex)
-					if reply.ConflictIndex-1 > nextIndex {
-						MyPrintf(Error, rf.me, term, index, "index out of, follower=%v", followerIdx)
-					}
-					//可能会出现已存在然后让nextIndex后移的情况, 但他返回的不一定正确
-					//如1当leader把index更新到1000, 然后2,3同步到30
-					//1挂了,2当选, 给1发index=30的appendEntries, 1返回个1000
-					//2更新nextIndex=1000, 下次发送日志时就挂了
-					rf.NextIndex[followerIdx] = Min(reply.ConflictIndex, len(rf.state.Logs))
+			} else if nowNextIndex == nextIndex {
+				//日志不匹配错误, 回退到期望的日志, todo: 日后可能需要优化, lab3的时候, 如果过不去需要改成term+index的形式
+				if reply.ConflictIndex > rf.NextIndex[followerIdx] {
+					replyBs, _ := json.Marshal(reply)
+					MyPrintf(Error, rf.me, term, index, "[SendAppendEntries], confilictIndex err reply=%v", string(replyBs))
 				}
+				MyPrintf(Error, rf.me, term, index, "[SendAppendEntries] backup %v log %v to %v", followerIdx, rf.NextIndex[followerIdx], reply.ConflictIndex)
+				if reply.ConflictIndex-1 > nextIndex {
+					MyPrintf(Error, rf.me, term, index, "index out of, follower=%v", followerIdx)
+				}
+				//可能会出现已存在然后让nextIndex后移的情况, 但他返回的不一定正确
+				//如1当leader把index更新到1000, 然后2,3同步到30
+				//1挂了,2当选, 给1发index=30的appendEntries, 1返回个1000
+				//2更新nextIndex=1000, 下次发送日志时就挂了
+				rf.NextIndex[followerIdx] = Min(reply.ConflictIndex, len(rf.state.Logs))
+			} else {
+
 			}
+			MyPrintf(Critcal, rf.me, -1, -1, "[sendAppendEntries] out lock")
 			rf.rwMu.Unlock()
 			return 0, nil
 		}

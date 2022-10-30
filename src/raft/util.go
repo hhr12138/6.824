@@ -7,15 +7,16 @@ import (
 )
 
 // Debugging
-const IsNotDebug = 0
-const nowLogLevel = Info
+const IsNotDebug = 1
+const nowLogLevel = Critcal
 
 type LogLevel int
+
 const (
-	Debug LogLevel = 0
-	Info LogLevel = 1
-	Warn LogLevel = 2
-	Error LogLevel = 3
+	Debug   LogLevel = 0
+	Info    LogLevel = 1
+	Warn    LogLevel = 2
+	Error   LogLevel = 3
 	Critcal LogLevel = 4
 )
 
@@ -27,10 +28,10 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 }
 
 func MyPrintf(level LogLevel, me int, term int, index int, format string, a ...interface{}) string {
-	if level < nowLogLevel{
+	if level < nowLogLevel {
 		return ""
 	}
-	str := fmt.Sprintf("level=%v, %v at %v-term %v-index: ",level, me, term, index)
+	str := fmt.Sprintf("level=%v, %v at %v-term %v-index: ", level, me, term, index)
 	ans := fmt.Sprintf(str+format, a...)
 	DPrintf(str+format, a...)
 	return ans
