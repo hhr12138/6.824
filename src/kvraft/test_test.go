@@ -175,7 +175,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 		title = title + "one client"
 	}
 	title = title + " (" + part + ")" // 3A or 3B
-
+	//开nservers个kv服务器
 	const nservers = 5
 	cfg := make_config(t, nservers, unreliable, maxraftstate)
 	defer cfg.cleanup()
