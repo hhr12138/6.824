@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const IsNotDebug = 1
+const IsNotDebug = 0
 const nowLogLevel = Info
 
 type LogLevel int

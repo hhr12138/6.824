@@ -77,7 +77,7 @@ func (ck *Clerk) Get(key string) string {
 			atomic.StoreInt64(&ck.leader, idx)
 			result = reply.Value
 			break
-		} else if reply.Code == REPEAT_REQUEST { //目前设计的get不会算作重复请求
+		} else if reply.Code == REPEAT_REQUEST {
 			ClientPrintf(Warn, ck.me, "send a repeated get request: reqeustId=%v", requestId)
 		}
 		reqeustCnt++
@@ -156,7 +156,7 @@ func (ck *Clerk) Remove(removeRequestId string) {
 	ClientPrintf(Info, ck.me, "send a remove request: requestId=%v", requestId)
 	for {
 		//args.RequestCnt = reqeustCnt
-		ClientPrintf(Info, ck.me, "try to call %v remove request: requestId=%v", idx, requestId)
+		//ClientPrintf(Info, ck.me, "try to call %v remove request: requestId=%v", idx, requestId)
 		ck.servers[idx].Call("KVServer.Remove", args, reply)
 		//不成功就一直重试.
 		if reply.Code == SUCCESS {
@@ -172,6 +172,7 @@ func (ck *Clerk) Remove(removeRequestId string) {
 		if reqeustCnt == serverCnt {
 			ClientPrintf(Error, ck.me, "can not find leader, request=%v", requestId)
 		}
+		time.Sleep(CLIENT_SLEEP_TIME * time.Millisecond)
 	}
 	ClientPrintf(Info, ck.me, "finish a remove request: requestId=%v", requestId)
 }
