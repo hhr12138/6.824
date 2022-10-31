@@ -4,6 +4,7 @@ import (
 	"../labgob"
 	"../labrpc"
 	"../raft"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -70,6 +71,11 @@ type LogState int
 //	WORKING LogState = 2
 //)
 
+type SnapshotNode struct {
+	Database  map[string]string //KV数据库
+	LogStates map[string]string //记录每个log的返回值
+}
+
 type KVServer struct {
 	mu       sync.Mutex
 	me       int
@@ -81,6 +87,7 @@ type KVServer struct {
 	logStates map[string]string //记录每个log的返回值
 	//logStates    sync.Map
 	maxraftstate int // snapshot if log grows this big
+	persister    *raft.Persister
 	// Your definitions here.
 }
 
@@ -226,6 +233,19 @@ func (kv *KVServer) executeLogs() {
 			}
 			//kv.mu.Unlock()
 		}
+		// 说实话, 这里用子进程去做更好, 快照阻塞服务可不是什么理想的事情, 不过是个case就算了.
+		size := kv.persister.RaftStateSize()
+		if kv.maxraftstate != -1 && size >= kv.maxraftstate-BUFFER_SIZE {
+			snapshotNode := SnapshotNode{
+				Database:  kv.database,
+				LogStates: kv.logStates,
+			}
+			w := new(bytes.Buffer)
+			e := labgob.NewEncoder(w)
+			e.Encode(snapshotNode)
+			bytes := w.Bytes()
+			kv.rf.Snapshot(msg.CommandIndex, bytes)
+		}
 		kv.mu.Unlock()
 	}
 }
@@ -252,6 +272,29 @@ func (kv *KVServer) killed() bool {
 	return z == 1
 }
 
+func (kv *KVServer) loadSnapshot(bs []byte) {
+	if bs == nil || len(bs) == 0 {
+		return
+	}
+	snapshot := &raft.Snapshot{}
+	r := bytes.NewBuffer(bs)
+	decoder := labgob.NewDecoder(r)
+	if err := decoder.Decode(snapshot); err != nil {
+		MyPrintf(Error, kv.me, "server loadSnapshot decode snapshot err, err=%v", err.Error())
+	}
+	if snapshot.SnapshotBytes == nil || len(snapshot.SnapshotBytes) == 0 {
+		return
+	}
+	snapshotNode := &SnapshotNode{}
+	r = bytes.NewBuffer(snapshot.SnapshotBytes)
+	decoder = labgob.NewDecoder(r)
+	if err := decoder.Decode(snapshotNode); err != nil {
+		MyPrintf(Error, kv.me, "server loadSnapshot decode snapshotNode err, err=%v", err.Error())
+	}
+	kv.database = snapshotNode.Database
+	kv.logStates = snapshotNode.LogStates
+}
+
 //
 // servers[] contains the ports of the set of
 // servers that will cooperate via Raft to
@@ -270,9 +313,9 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	labgob.Register(Op{})
-
 	kv := new(KVServer)
 	kv.me = me
+	kv.persister = persister
 	kv.maxraftstate = maxraftstate
 
 	// You may need initialization code here.
@@ -282,7 +325,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.logStates = make(map[string]string, 0)
 	kv.database = make(map[string]string, 0)
 	//kv.commandToResp = make(map[string] chan string)
-
+	kv.loadSnapshot(persister.ReadSnapshot())
 	// You may need initialization code here.
 	go kv.executeLogs()
 	return kv

@@ -93,12 +93,18 @@ type Raft struct {
 	MatchIndex  []int         //已经同步到follower的日志
 	applyCh     chan ApplyMsg // 返回给tester告诉他该消息以提交
 	//appendEntriesCh chan []string //发送给leader的AppendEntries, 用来从里面取东西更新ld的log[]
-	logStates   map[string]LogState //记录每个log的状态, id->状态, NOT_FIND: 未到, COMMITTED: 已提交(已删除但没物理删除的也按照已提交算吧, 毕竟不重复执行就行, 按原本返回即可), WORKING: 执行中
-	voteTimeout int64               //选举超时
-	rwMu        sync.RWMutex        //读写锁
-	buf         *bytes.Buffer
-	dec         *labgob.LabDecoder
-	enc         *labgob.LabEncoder
+	logStates           map[string]LogState //记录每个log的状态, id->状态, NOT_FIND: 未到, COMMITTED: 已提交(已删除但没物理删除的也按照已提交算吧, 毕竟不重复执行就行, 按原本返回即可), WORKING: 执行中
+	voteTimeout         int64               //选举超时
+	rwMu                sync.RWMutex        //读写锁
+	beforeSnapshotTerm  int                 //上次快照的任期, 用来接受日志时的判断
+	beforeSnapshotIndex int                 //上次快照的下标
+}
+
+//快照对象, 任期, 下标, 以及这些快照执行后的内容
+type Snapshot struct {
+	Term          int
+	Index         int
+	SnapshotBytes []byte
 }
 
 type LogCommand struct {
@@ -213,7 +219,14 @@ func (rf *Raft) StartVote(term, index int, endTime int64, lastLog *Log) {
 						return
 					}
 					//commitIndex := rf.state.CommitIndex
-					nextIndex := len(rf.state.Logs)
+					nextIndex := rf.beforeSnapshotIndex
+					if len(rf.state.Logs)-1 >= 0 {
+						nextIndex = rf.state.Logs[len(rf.state.Logs)-1].Index + 1
+					}
+					checkIndex := len(rf.state.Logs)
+					if checkIndex != nextIndex {
+						MyPrintf(Error, rf.me, term, checkIndex, "startVote check error, nextIndex=%v", nextIndex)
+					}
 					nextIndexs := make([]int, len(rf.peers))
 					for i := 0; i < len(nextIndexs); i++ {
 						nextIndexs[i] = nextIndex
@@ -259,8 +272,15 @@ func (rf *Raft) StartVote(term, index int, endTime int64, lastLog *Log) {
 func (rf *Raft) heartCheck() {
 	for {
 		rf.rwMu.RLock()
-		index := len(rf.state.Logs) - 1
 		term, ld := rf.GetState()
+		index := rf.beforeSnapshotIndex
+		if len(rf.state.Logs)-1 >= 0 {
+			index = rf.state.Logs[len(rf.state.Logs)-1].Index
+		}
+		checkIndex := len(rf.state.Logs) - 1
+		if checkIndex != index {
+			MyPrintf(Error, rf.me, term, checkIndex, "heartCheck check error, nextIndex=%v", index)
+		}
 		died := rf.killed()
 		if died {
 			MyPrintf(Info, rf.me, term, index, "return [heartCheck]")
@@ -344,10 +364,24 @@ func (rf *Raft) readPersist(data []byte) {
 	d := labgob.NewDecoder(r)
 	state := &State{}
 	if err := d.Decode(state); err != nil {
-		MyPrintf(Error, rf.me, 0, 0, "decode err, err=%v", err.Error())
+		MyPrintf(Error, rf.me, 0, 0, "readPersist decode err, err=%v", err.Error())
 	} else {
 		rf.state = state
 	}
+}
+
+func (rf *Raft) loadSnapshot(data []byte) {
+	if data == nil || len(data) < 1 {
+		return
+	}
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	snapshot := &Snapshot{}
+	if err := d.Decode(snapshot); err != nil {
+		MyPrintf(Error, rf.me, 0, 0, "loadSnapshot decode err, err=%v", err.Error())
+	}
+	rf.beforeSnapshotIndex = snapshot.Index
+	rf.beforeSnapshotTerm = snapshot.Term
 }
 
 //
@@ -379,7 +413,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	defer rf.rwMu.Unlock()
 	rf.rwMu.Lock()
 	term, _ := rf.GetState()
-	index := len(rf.state.Logs) - 1
+	index := rf.beforeSnapshotIndex
+	if len(rf.state.Logs)-1 >= 0 {
+		index = rf.state.Logs[len(rf.state.Logs)-1].Index
+	}
+	checkIndex := len(rf.state.Logs) - 1
+	if checkIndex != index {
+		MyPrintf(Error, rf.me, term, checkIndex, "requestVote check error, nextIndex=%v", index)
+	}
 	log := rf.state.Logs[index]
 	died := rf.killed()
 	//replyMsg := ""
@@ -502,7 +543,14 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.rwMu.Lock()
 	defer rf.rwMu.Unlock()
 	//其他的一般index都是=rf.state.Logs-1的, 但现在这是个追加log的操作, 追加后index就正确了, emm, 应该咋写都行, 先这样吧
-	index = len(rf.state.Logs)
+	index = rf.beforeSnapshotIndex
+	if len(rf.state.Logs)-1 >= 0 {
+		index = rf.state.Logs[len(rf.state.Logs)-1].Index + 1
+	}
+	checkIndex := len(rf.state.Logs)
+	if checkIndex != index {
+		MyPrintf(Error, rf.me, term, checkIndex, "start check error, nextIndex=%v", index)
+	}
 	term, ld := rf.GetState()
 	died := rf.killed()
 	if !ld || died {
@@ -554,7 +602,14 @@ func (rf *Raft) sendLog(followerIdx int) {
 	for {
 		rf.rwMu.RLock()
 		term, ld := rf.GetState()
-		index := len(rf.state.Logs) - 1
+		index := rf.beforeSnapshotIndex
+		if len(rf.state.Logs)-1 >= 0 {
+			index = rf.state.Logs[len(rf.state.Logs)-1].Index
+		}
+		checkIndex := len(rf.state.Logs) - 1
+		if checkIndex != index {
+			MyPrintf(Error, rf.me, term, checkIndex, "sendLog check error, nextIndex=%v", index)
+		}
 		died := rf.killed()
 		if !ld || died {
 			MyPrintf(Info, rf.me, term, index, "[sendLog] return isLeader=%v,died=%v", ld, died)
@@ -634,7 +689,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.Id = rf.me
 	//以收到时为准, 因为rf的CurrentTerm可能会被其他携程更新
 	currentTerm, _ := rf.GetState()
-	currentIndex := len(rf.state.Logs) - 1
+	currentIndex := rf.beforeSnapshotIndex
+	if len(rf.state.Logs)-1 >= 0 {
+		currentIndex = rf.state.Logs[len(rf.state.Logs)-1].Index
+	}
+	checkIndex := len(rf.state.Logs) - 1
+	if checkIndex != currentIndex {
+		MyPrintf(Error, rf.me, currentTerm, checkIndex, "Appendentries check error, nextIndex=%v", currentIndex)
+	}
 	var preLog *Log
 	if currentIndex >= args.PrevLogIndex {
 		preLog = rf.state.Logs[args.PrevLogIndex]
@@ -689,7 +751,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	for i := 0; i < len(args.Logs); i++ {
 		newLog := args.Logs[i]
 		//不用currentIndex比较了, 还得实时维护, 多len下没啥问题
-		if newLog.Index < len(rf.state.Logs) {
+		nowIdx := rf.beforeSnapshotIndex
+		if len(rf.state.Logs)-1 >= 0 {
+			nowIdx = rf.state.Logs[len(rf.state.Logs)-1].Index + 1
+		}
+		checkIndex = len(rf.state.Logs)
+		if checkIndex != nowIdx {
+			MyPrintf(Error, rf.me, currentTerm, checkIndex, "AppendEntries check error, nextIndex=%v", nowIdx)
+		}
+		if newLog.Index < nowIdx {
 			nowLog := rf.state.Logs[newLog.Index]
 			if newLog.Term != nowLog.Term {
 				rf.state.Logs = rf.state.Logs[:nowLog.Index]
@@ -703,7 +773,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.persist()
 	//更新commitIndex, 并提交
 	if args.LeaderCommit > rf.CommitIndex {
-		commitIndex := Min(args.LeaderCommit, len(rf.state.Logs)-1)
+		nowIdx := rf.beforeSnapshotIndex
+		if len(rf.state.Logs)-1 >= 0 {
+			nowIdx = rf.state.Logs[len(rf.state.Logs)-1].Index
+		}
+		checkIndex = len(rf.state.Logs) - 1
+		if checkIndex != nowIdx {
+			MyPrintf(Error, rf.me, currentTerm, checkIndex, "appendEntries check error, nextIndex=%v", nowIdx)
+		}
+		commitIndex := Min(args.LeaderCommit, nowIdx)
 		for i := rf.CommitIndex + 1; i <= commitIndex; i++ {
 			log := rf.state.Logs[i]
 			applyMsg := ApplyMsg{
@@ -793,6 +871,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	//rf.appendEntriesCh = make(chan []string, BUFFER_SIZE)
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+	rf.loadSnapshot(persister.ReadSnapshot())
 
 	DPrintf("%v start", rf.me)
 	go rf.heartCheck()
@@ -807,7 +886,14 @@ func (rf *Raft) commit() {
 		flag := false
 		rf.rwMu.RLock()
 		term, ld := rf.GetState()
-		index := len(rf.state.Logs)
+		index := rf.beforeSnapshotIndex
+		if len(rf.state.Logs)-1 >= 0 {
+			index = rf.state.Logs[len(rf.state.Logs)-1].Index + 1
+		}
+		checkIndex := len(rf.state.Logs)
+		if checkIndex != index {
+			MyPrintf(Error, rf.me, term, checkIndex, "commit check error, nextIndex=%v", index)
+		}
 		if !ld || rf.killed() {
 			rf.rwMu.RUnlock()
 			MyPrintf(Info, rf.me, term, index, "[commit] exit")
@@ -861,7 +947,14 @@ func (rf *Raft) sendHeart(followerIdx int) {
 	for {
 		rf.rwMu.RLock()
 		term, ld := rf.GetState()
-		index := len(rf.state.Logs) - 1
+		index := rf.beforeSnapshotIndex
+		if len(rf.state.Logs)-1 >= 0 {
+			index = rf.state.Logs[len(rf.state.Logs)-1].Index
+		}
+		checkIndex := len(rf.state.Logs) - 1
+		if checkIndex != index {
+			MyPrintf(Error, rf.me, term, checkIndex, "sendHeart check error, nextIndex=%v", index)
+		}
 		if !ld {
 			rf.rwMu.RUnlock()
 			MyPrintf(Info, rf.me, term, index, "stop send heart")
@@ -978,11 +1071,79 @@ func (rf *Raft) SendAppendEntries(followerIdx, term, index, leaderCommit, nextIn
 					//如1当leader把index更新到1000, 然后2,3同步到30
 					//1挂了,2当选, 给1发index=30的appendEntries, 1返回个1000
 					//2更新nextIndex=1000, 下次发送日志时就挂了
-					rf.NextIndex[followerIdx] = Min(reply.ConflictIndex, len(rf.state.Logs))
+					idx := rf.beforeSnapshotIndex
+					if len(rf.state.Logs)-1 >= 0 {
+						idx = rf.state.Logs[len(rf.state.Logs)-1].Index
+					}
+					checkIndex := len(rf.state.Logs) - 1
+					if checkIndex != idx {
+						MyPrintf(Error, rf.me, term, checkIndex, "sendAppendEntries check error, nextIndex=%v", index)
+					}
+					rf.NextIndex[followerIdx] = Min(reply.ConflictIndex, idx)
 				}
 			}
 			rf.rwMu.Unlock()
 			return 0, nil
 		}
 	}
+}
+
+//leader传递快照
+//func (rf *Raft) SnapshotForLeader()
+
+//本地快照
+func (rf *Raft) Snapshot(targetIdx int, bs []byte) {
+	rf.rwMu.Lock()
+	defer rf.rwMu.Unlock()
+	term := rf.state.CurrentTerm
+	index := rf.state.Logs[len(rf.state.Logs)-1].Index
+	//beforeSnapshotBytes := rf.persister.ReadSnapshot()
+	//beforeSnapshot := &Snapshot{}
+	//err := json.Unmarshal(beforeSnapshotBytes, beforeSnapshot)
+	//if err != nil{
+	//	MyPrintf(Critcal,rf.me,term,index,"unmarshal error: %v",err.Error())
+	//}
+	beforeSnapshotIndex := rf.beforeSnapshotIndex
+	//当前快照更加新, 这种情况可能发生在leader的同步和自身同步并发出现的情况下, 此时什么也不做
+	if targetIdx <= beforeSnapshotIndex {
+		MyPrintf(Warn, rf.me, term, index, "targetIndex < snapshotIndex, targetIndex=%v, snapshotIndex=%v", targetIdx, index)
+		return
+	}
+	//不能直接用targetIdx来当作下标, 因为此时切片的idx和日志的不再一一对于了
+	targetTerm := 0
+	newLogs := make([]*Log, 0, targetIdx-beforeSnapshotIndex)
+	//下面这个for可以优化成二分查找
+	for i := 0; i < len(rf.state.Logs); i++ {
+		log := rf.state.Logs[i]
+		if log.Index == targetIdx {
+			targetTerm = log.Term
+		}
+		//不需要快照的再塞回去
+		if log.Index > targetIdx {
+			newLogs = append(newLogs, log)
+		}
+		//logs里的第一个log的下标小于当前下标, 这种情况不可能发生, 测试完后去掉
+		if log.Index <= beforeSnapshotIndex {
+			MyPrintf(Error, rf.me, term, index, "%v index log is snapshot", i)
+			continue
+		}
+	}
+	snapshot := Snapshot{
+		Term:          targetTerm,
+		Index:         targetIdx,
+		SnapshotBytes: bs,
+	}
+	rf.beforeSnapshotTerm = targetTerm
+	rf.beforeSnapshotIndex = targetIdx
+	snapshotW := new(bytes.Buffer)
+	snapshotEncoder := labgob.NewEncoder(snapshotW)
+	snapshotEncoder.Encode(snapshot)
+	snapshotBytes := snapshotW.Bytes()
+	rf.state.Logs = newLogs
+	//这里死了没问题, 此时的state的状态是临时的, 下次恢复的时候会按上次持久化的state恢复
+	stateW := new(bytes.Buffer)
+	stateEncoder := labgob.NewEncoder(stateW)
+	stateEncoder.Encode(rf.state)
+	stateBytes := snapshotW.Bytes()
+	rf.persister.SaveStateAndSnapshot(stateBytes, snapshotBytes)
 }

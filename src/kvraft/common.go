@@ -9,6 +9,7 @@ const (
 const (
 	CLIENT_SLEEP_TIME            = 20
 	WAIT_CHANNEL_RESP_SLEEP_TIME = 10 //ms
+	BUFFER_SIZE                  = 50 //byte, 看case maxraftstate 也就1000
 )
 
 type Err string
