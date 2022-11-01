@@ -223,10 +223,6 @@ func (rf *Raft) StartVote(term, index int, endTime int64, lastLog *Log) {
 					if len(rf.state.Logs)-1 >= 0 {
 						nextIndex = rf.state.Logs[len(rf.state.Logs)-1].Index + 1
 					}
-					checkIndex := len(rf.state.Logs)
-					if checkIndex != nextIndex {
-						MyPrintf(Error, rf.me, term, checkIndex, "startVote check error, nextIndex=%v", nextIndex)
-					}
 					nextIndexs := make([]int, len(rf.peers))
 					for i := 0; i < len(nextIndexs); i++ {
 						nextIndexs[i] = nextIndex
@@ -276,10 +272,6 @@ func (rf *Raft) heartCheck() {
 		index := rf.beforeSnapshotIndex
 		if len(rf.state.Logs)-1 >= 0 {
 			index = rf.state.Logs[len(rf.state.Logs)-1].Index
-		}
-		checkIndex := len(rf.state.Logs) - 1
-		if checkIndex != index {
-			MyPrintf(Error, rf.me, term, checkIndex, "heartCheck check error, nextIndex=%v", index)
 		}
 		died := rf.killed()
 		if died {
@@ -417,10 +409,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if len(rf.state.Logs)-1 >= 0 {
 		index = rf.state.Logs[len(rf.state.Logs)-1].Index
 	}
-	checkIndex := len(rf.state.Logs) - 1
-	if checkIndex != index {
-		MyPrintf(Error, rf.me, term, checkIndex, "requestVote check error, nextIndex=%v", index)
-	}
 	log := rf.state.Logs[index]
 	died := rf.killed()
 	//replyMsg := ""
@@ -547,10 +535,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if len(rf.state.Logs)-1 >= 0 {
 		index = rf.state.Logs[len(rf.state.Logs)-1].Index + 1
 	}
-	checkIndex := len(rf.state.Logs)
-	if checkIndex != index {
-		MyPrintf(Error, rf.me, term, checkIndex, "start check error, nextIndex=%v", index)
-	}
 	term, ld := rf.GetState()
 	died := rf.killed()
 	if !ld || died {
@@ -605,10 +589,6 @@ func (rf *Raft) sendLog(followerIdx int) {
 		index := rf.beforeSnapshotIndex
 		if len(rf.state.Logs)-1 >= 0 {
 			index = rf.state.Logs[len(rf.state.Logs)-1].Index
-		}
-		checkIndex := len(rf.state.Logs) - 1
-		if checkIndex != index {
-			MyPrintf(Error, rf.me, term, checkIndex, "sendLog check error, nextIndex=%v", index)
 		}
 		died := rf.killed()
 		if !ld || died {
@@ -693,10 +673,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if len(rf.state.Logs)-1 >= 0 {
 		currentIndex = rf.state.Logs[len(rf.state.Logs)-1].Index
 	}
-	checkIndex := len(rf.state.Logs) - 1
-	if checkIndex != currentIndex {
-		MyPrintf(Error, rf.me, currentTerm, checkIndex, "Appendentries check error, nextIndex=%v", currentIndex)
-	}
 	var preLog *Log
 	if currentIndex >= args.PrevLogIndex {
 		preLog = rf.state.Logs[args.PrevLogIndex]
@@ -755,10 +731,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		if len(rf.state.Logs)-1 >= 0 {
 			nowIdx = rf.state.Logs[len(rf.state.Logs)-1].Index + 1
 		}
-		checkIndex = len(rf.state.Logs)
-		if checkIndex != nowIdx {
-			MyPrintf(Error, rf.me, currentTerm, checkIndex, "AppendEntries check error, nextIndex=%v", nowIdx)
-		}
 		if newLog.Index < nowIdx {
 			nowLog := rf.state.Logs[newLog.Index]
 			if newLog.Term != nowLog.Term {
@@ -776,10 +748,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		nowIdx := rf.beforeSnapshotIndex
 		if len(rf.state.Logs)-1 >= 0 {
 			nowIdx = rf.state.Logs[len(rf.state.Logs)-1].Index
-		}
-		checkIndex = len(rf.state.Logs) - 1
-		if checkIndex != nowIdx {
-			MyPrintf(Error, rf.me, currentTerm, checkIndex, "appendEntries check error, nextIndex=%v", nowIdx)
 		}
 		commitIndex := Min(args.LeaderCommit, nowIdx)
 		for i := rf.CommitIndex + 1; i <= commitIndex; i++ {
@@ -890,10 +858,6 @@ func (rf *Raft) commit() {
 		if len(rf.state.Logs)-1 >= 0 {
 			index = rf.state.Logs[len(rf.state.Logs)-1].Index + 1
 		}
-		checkIndex := len(rf.state.Logs)
-		if checkIndex != index {
-			MyPrintf(Error, rf.me, term, checkIndex, "commit check error, nextIndex=%v", index)
-		}
 		if !ld || rf.killed() {
 			rf.rwMu.RUnlock()
 			MyPrintf(Info, rf.me, term, index, "[commit] exit")
@@ -950,10 +914,6 @@ func (rf *Raft) sendHeart(followerIdx int) {
 		index := rf.beforeSnapshotIndex
 		if len(rf.state.Logs)-1 >= 0 {
 			index = rf.state.Logs[len(rf.state.Logs)-1].Index
-		}
-		checkIndex := len(rf.state.Logs) - 1
-		if checkIndex != index {
-			MyPrintf(Error, rf.me, term, checkIndex, "sendHeart check error, nextIndex=%v", index)
 		}
 		if !ld {
 			rf.rwMu.RUnlock()
@@ -1074,10 +1034,6 @@ func (rf *Raft) SendAppendEntries(followerIdx, term, index, leaderCommit, nextIn
 					idx := rf.beforeSnapshotIndex
 					if len(rf.state.Logs)-1 >= 0 {
 						idx = rf.state.Logs[len(rf.state.Logs)-1].Index
-					}
-					checkIndex := len(rf.state.Logs) - 1
-					if checkIndex != idx {
-						MyPrintf(Error, rf.me, term, checkIndex, "sendAppendEntries check error, nextIndex=%v", index)
 					}
 					rf.NextIndex[followerIdx] = Min(reply.ConflictIndex, idx)
 				}
