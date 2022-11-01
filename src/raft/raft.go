@@ -605,6 +605,42 @@ func (rf *Raft) sendLog(followerIdx int) {
 		}
 		nextIndex := rf.NextIndex[followerIdx]
 		matchIndex := rf.MatchIndex[followerIdx]
+		//这个已经被快照同步了, 无法发送
+		if nextIndex <= rf.beforeSnapshotIndex {
+			//读取当前快照
+			snapshot := rf.persister.ReadSnapshot()
+			arg := &SnapshotArgs{
+				Term:              term,
+				LeaderId:          rf.me,
+				LastIncludedIndex: rf.beforeSnapshotIndex,
+				LastIncludedTerm:  rf.beforeSnapshotTerm,
+				Data:              snapshot,
+			}
+			peer := rf.peers[followerIdx]
+			rf.rwMu.RUnlock()
+			reply := &SnapshotReply{}
+			peer.Call("Raft.SnapshotForLeader", arg, reply)
+			rf.rwMu.Lock()
+			currentTerm, isLeader := rf.GetState()
+			if !isLeader {
+				rf.rwMu.Unlock()
+				return
+			}
+			if currentTerm < reply.Term {
+				//必须优先更新任期
+				rf.state.CurrentTerm = reply.Term
+				//只要更新任期就重置选票
+				rf.state.VotedFor = -1
+				rf.persist()
+				//收到更改Term, 退位
+				MyPrintf(Info, rf.me, term, index, "[sendAppendEntries] get%v highter term %v, update to follower", followerIdx, reply.Term)
+				rf.Identity = 1
+				rf.rwMu.Unlock()
+				return
+			}
+			rf.NextIndex[followerIdx] = reply.NextIndex
+			continue
+		}
 		//理论上不可能
 		if nextIndex == 0 {
 			panic("err : [sendLog] nextIndex == 0")
@@ -893,7 +929,7 @@ func (rf *Raft) commit() {
 						CommandIndex: i,
 					}
 					rf.applyCh <- applyMsg
-					MyPrintf(Info, rf.me, term, commitIndex, "[commit] apply msg %v, command=%v, msgTerm=%v", applyMsg.CommandIndex, applyMsg.Command, rf.state.Logs[i].Term)
+					MyPrintf(Critcal, rf.me, term, commitIndex, "[commit] apply msg %v, command=%v, msgTerm=%v", applyMsg.CommandIndex, applyMsg.Command, rf.state.Logs[i].Term)
 				}
 				rf.CommitIndex = commitIndex
 				if rf.CommitIndex > rf.LastApplied {
@@ -1018,7 +1054,7 @@ func (rf *Raft) SendAppendEntries(followerIdx, term, index, leaderCommit, nextIn
 				rf.Identity = 1
 			} else {
 				if nowNextIndex == nextIndex {
-					//日志不匹配错误, 回退到期望的日志, todo: 日后可能需要优化, lab3的时候, 如果过不去需要改成term+index的形式
+					//日志不匹配错误, 回退到期望的日志, todo: 日后可能需要优化, lab3的时候, 如果过不去需要改成term+index的形式 done
 					if reply.ConflictIndex > rf.NextIndex[followerIdx] {
 						replyBs, _ := json.Marshal(reply)
 						MyPrintf(Error, rf.me, term, index, "[SendAppendEntries], confilictIndex err reply=%v", string(replyBs))
@@ -1045,7 +1081,37 @@ func (rf *Raft) SendAppendEntries(followerIdx, term, index, leaderCommit, nextIn
 }
 
 //leader传递快照
-//func (rf *Raft) SnapshotForLeader()
+func (rf *Raft) SnapshotForLeader(args *SnapshotArgs, reply *SnapshotReply) {
+	rf.rwMu.Lock()
+	defer rf.rwMu.Unlock()
+	currentTerm := rf.state.CurrentTerm
+	term := args.Term
+	//当前任期更新, 回复这次请求
+	reply.Term = currentTerm
+	if currentTerm > term {
+		return
+	}
+	logs := make([]*Log, 0)
+	//如果现存日志条目和快照中最后的日志条目具有相同的索引值和任期号, 那么就保留其后的日志, 否则就丢弃全部日志
+	if len(rf.state.Logs) > 0 && rf.state.Logs[0].Index <= args.LastIncludedIndex && rf.state.Logs[len(rf.state.Logs)-1].Index > args.LastIncludedIndex {
+		for i := 0; i < len(rf.state.Logs); i++ {
+			log := rf.state.Logs[i]
+			if log.Index > args.LastIncludedIndex {
+				logs = append(logs, log)
+			}
+		}
+	}
+
+	rf.state.Logs = logs
+	rf.beforeSnapshotIndex = args.LastIncludedIndex
+	rf.beforeSnapshotTerm = args.LastIncludedTerm
+	stateBytes := rf.getStateBytes()
+	reply.NextIndex = args.LastIncludedIndex + 1
+	if len(rf.state.Logs) > 0 {
+		reply.NextIndex = rf.state.Logs[len(rf.state.Logs)-1].Index + 1
+	}
+	rf.persister.SaveStateAndSnapshot(stateBytes, args.Data)
+}
 
 //本地快照
 func (rf *Raft) Snapshot(targetIdx int, bs []byte) {
@@ -1089,17 +1155,27 @@ func (rf *Raft) Snapshot(targetIdx int, bs []byte) {
 		Index:         targetIdx,
 		SnapshotBytes: bs,
 	}
+	rf.state.Logs = newLogs
 	rf.beforeSnapshotTerm = targetTerm
 	rf.beforeSnapshotIndex = targetIdx
-	snapshotW := new(bytes.Buffer)
-	snapshotEncoder := labgob.NewEncoder(snapshotW)
-	snapshotEncoder.Encode(snapshot)
-	snapshotBytes := snapshotW.Bytes()
-	rf.state.Logs = newLogs
+	stateBytes := rf.getStateBytes()
+	snapshotBytes := rf.getSnapshotBytes(snapshot)
+	rf.persister.SaveStateAndSnapshot(stateBytes, snapshotBytes)
+}
+
+func (rf *Raft) getStateBytes() []byte {
 	//这里死了没问题, 此时的state的状态是临时的, 下次恢复的时候会按上次持久化的state恢复
 	stateW := new(bytes.Buffer)
 	stateEncoder := labgob.NewEncoder(stateW)
 	stateEncoder.Encode(rf.state)
-	stateBytes := snapshotW.Bytes()
-	rf.persister.SaveStateAndSnapshot(stateBytes, snapshotBytes)
+	stateBytes := stateW.Bytes()
+	return stateBytes
+}
+
+func (rf *Raft) getSnapshotBytes(snapshot Snapshot) []byte {
+	snapshotW := new(bytes.Buffer)
+	snapshotEncoder := labgob.NewEncoder(snapshotW)
+	snapshotEncoder.Encode(snapshot)
+	snapshotBytes := snapshotW.Bytes()
+	return snapshotBytes
 }

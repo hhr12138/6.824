@@ -173,7 +173,9 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 func (kv *KVServer) executeLogs() {
 	for {
 		msg := <-kv.applyCh
+		MyPrintf(Info, kv.me, "get a msg: msgIndex=%v", msg.CommandIndex)
 		kv.mu.Lock()
+		MyPrintf(Info, kv.me, "msg into lock: msgIndex=%v", msg.CommandIndex)
 		if kv.killed() {
 			MyPrintf(Error, kv.me, "is killed")
 			kv.mu.Unlock()
@@ -199,7 +201,7 @@ func (kv *KVServer) executeLogs() {
 					//targetVal = value
 					kv.logStates[requestId] = value
 					//kv.logStates.Store(requestId, value)
-					MyPrintf(Info, kv.me, "get request success requestId=%v, key=%v, value=%v", requestId, key, value)
+					MyPrintf(Info, kv.me, "get request success requestId=%v, key=%v, value=%v, index=%v", requestId, key, value, msg.CommandIndex)
 				}
 			case "Put":
 				if _, exist := kv.logStates[requestId]; !exist {
@@ -209,6 +211,7 @@ func (kv *KVServer) executeLogs() {
 					kv.logStates[requestId] = "success"
 					//kv.logStates.Store(requestId, "success")
 					//targetVal = "success"
+					MyPrintf(Info, kv.me, "Put request success requestId=%v, key=%v, value=%v, index=%v", requestId, key, value, msg.CommandIndex)
 				}
 			case "Append":
 				if _, exist := kv.logStates[requestId]; !exist {
@@ -218,6 +221,7 @@ func (kv *KVServer) executeLogs() {
 					val += value
 					kv.database[key] = val
 					kv.logStates[requestId] = "success"
+					MyPrintf(Info, kv.me, "Append request success requestId=%v, key=%v, value=%v, index=%v", requestId, key, value, msg.CommandIndex)
 					//kv.logStates.Store(requestId, "success")
 					//targetVal = "success"
 				}
@@ -227,6 +231,7 @@ func (kv *KVServer) executeLogs() {
 				//targetVal = "success"
 				kv.logStates[requestId] = "success"
 				//kv.logStates.Store(requestId, "success")
+				MyPrintf(Info, kv.me, "Remove request success requestId=%v, key=%v, value=%v, index=%v", requestId, key, msg.CommandIndex)
 			default:
 				MyPrintf(Critcal, kv.me, "undefined ope")
 				panic("undefined ope")

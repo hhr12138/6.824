@@ -19,6 +19,19 @@ type AppendEntriesArgs struct {
 	Logs         []*Log `json:"log"`            //日志条目, 序列化后的值, 如果为null则是心跳, 相当于论文里的entries[]
 }
 
+type SnapshotArgs struct {
+	Term              int
+	LeaderId          int
+	LastIncludedIndex int
+	LastIncludedTerm  int
+	Data              []byte
+}
+
+type SnapshotReply struct {
+	Term      int
+	NextIndex int
+}
+
 type AppendEntriesReply struct {
 	Term int `json:"term"` //用于让master更新自己
 	//ConflictTerm  int    `json:"conflict_term"`  //用于加速回溯
