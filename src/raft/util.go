@@ -8,7 +8,8 @@ import (
 
 // Debugging
 const IsNotDebug = 1
-const nowLogLevel = Error
+const nowLogLevel = SLock
+const PrintLock = 1
 
 type LogLevel int
 
@@ -18,6 +19,8 @@ const (
 	Warn    LogLevel = 2
 	Error   LogLevel = 3
 	Critcal LogLevel = 4
+	Lock    LogLevel = 5
+	SLock   LogLevel = 6
 )
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
@@ -29,6 +32,9 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 
 func MyPrintf(level LogLevel, me int, term int, index int, format string, a ...interface{}) string {
 	if level < nowLogLevel {
+		return ""
+	}
+	if level == Lock && PrintLock <= 0 {
 		return ""
 	}
 	str := fmt.Sprintf("level=%v, %v at %v-term %v-index: ", level, me, term, index)
