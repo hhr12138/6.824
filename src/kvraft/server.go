@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const IsNotDebug = 0
+const IsNotDebug = 1
 const nowLogLevel = Info
 
 type LogLevel int
@@ -176,11 +176,11 @@ func (kv *KVServer) executeLogs() {
 		MyPrintf(Info, kv.me, "get a msg: msgIndex=%v", msg.CommandIndex)
 		kv.mu.Lock()
 		MyPrintf(Info, kv.me, "msg into lock: msgIndex=%v", msg.CommandIndex)
-		if kv.killed() {
-			MyPrintf(Error, kv.me, "is killed")
-			kv.mu.Unlock()
-			return
-		}
+		//if kv.killed() {
+		//	MyPrintf(Error, kv.me, "is killed")
+		//	kv.mu.Unlock()
+		//	return
+		//}
 		if msg.CommandValid {
 			command := &raft.LogCommand{}
 			bytes, ok := msg.Command.([]byte)
@@ -249,8 +249,11 @@ func (kv *KVServer) executeLogs() {
 			e := labgob.NewEncoder(w)
 			e.Encode(snapshotNode)
 			bytes := w.Bytes()
+			MyPrintf(Info, kv.me, "try kv.rf.Snapshot: msgIndex=%v", msg.CommandIndex)
 			kv.rf.Snapshot(msg.CommandIndex, bytes)
+			MyPrintf(Info, kv.me, "kv.rf.Snapshot success: msgIndex=%v", msg.CommandIndex)
 		}
+		MyPrintf(Info, kv.me, "msg out lock: msgIndex=%v", msg.CommandIndex)
 		kv.mu.Unlock()
 	}
 }
