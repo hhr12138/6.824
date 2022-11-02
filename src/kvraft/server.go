@@ -14,7 +14,7 @@ import (
 )
 
 const IsNotDebug = 1
-const nowLogLevel = Info
+const nowLogLevel = TIME
 
 type LogLevel int
 
@@ -24,6 +24,7 @@ const (
 	Warn    LogLevel = 2
 	Error   LogLevel = 3
 	Critcal LogLevel = 4
+	TIME    LogLevel = 5
 )
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
@@ -92,6 +93,11 @@ type KVServer struct {
 }
 
 func (kv *KVServer) sendRequest(common *raft.LogCommand) (Code, string, string) {
+	//startTime := time.Now().UnixNano()
+	//defer func() {
+	//	endTime := time.Now().UnixNano()
+	//	MyPrintf(TIME, kv.me,"sendReuqest use %v mill",(endTime-startTime)/1000000)
+	//}()
 	marshal, _ := json.Marshal(common)
 	//start成功后raft立即开始执行, 如果在raft执行完成并返回结构后commandToResp都没set就会导致execute方法空指针, 因此commandToResp也可以换成普通map了
 	requestId := common.RequestId
@@ -109,7 +115,10 @@ func (kv *KVServer) sendRequest(common *raft.LogCommand) (Code, string, string) 
 		kv.mu.Lock()
 		cache, exist := kv.logStates[requestId]
 		//cache, exist := kv.logStates.Load(requestId)
-		if exist {
+		if common.Ope == "Remove" || exist {
+			if cache == "r" {
+				delete(kv.logStates, requestId)
+			}
 			kv.mu.Unlock()
 			return SUCCESS, cache, ""
 		}
@@ -122,16 +131,12 @@ func (kv *KVServer) sendRequest(common *raft.LogCommand) (Code, string, string) 
 func (kv *KVServer) Remove(args *RemoveArgs, reply *RemoveReply) {
 	var common = &raft.LogCommand{
 		RequestId: args.RequestId,
-		IsGet:     true,
 		Command: raft.Command{
 			Ope: "Remove",
 			Key: args.RemoveRequestId,
 		},
 	}
 	code, _, err := kv.sendRequest(common)
-	//kv.mu.Lock()
-	//delete(kv.logStates,args.RequestId)
-	//kv.mu.Unlock()
 	reply.Code = code
 	reply.Err = err
 }
@@ -141,7 +146,6 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	//get请求保证幂等了, 无需记录id
 	common := &raft.LogCommand{
 		RequestId: args.RequestId,
-		IsGet:     true,
 		Command: raft.Command{
 			Ope: "Get",
 			Key: args.Key,
@@ -158,7 +162,6 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 	common := &raft.LogCommand{
 		RequestId: args.RequestId,
-		IsGet:     false,
 		Command: raft.Command{
 			Ope:   args.Op,
 			Key:   args.Key,
@@ -208,7 +211,7 @@ func (kv *KVServer) executeLogs() {
 					//if _, exist := kv.logStates.Load(requestId); !exist {
 					value := command.Value
 					kv.database[key] = value
-					kv.logStates[requestId] = "success"
+					kv.logStates[requestId] = "s"
 					//kv.logStates.Store(requestId, "success")
 					//targetVal = "success"
 					MyPrintf(Info, kv.me, "Put request success requestId=%v, key=%v, value=%v, index=%v", requestId, key, value, msg.CommandIndex)
@@ -220,7 +223,7 @@ func (kv *KVServer) executeLogs() {
 					val := kv.database[key]
 					val += value
 					kv.database[key] = val
-					kv.logStates[requestId] = "success"
+					kv.logStates[requestId] = "s"
 					MyPrintf(Info, kv.me, "Append request success requestId=%v, key=%v, value=%v, index=%v", requestId, key, value, msg.CommandIndex)
 					//kv.logStates.Store(requestId, "success")
 					//targetVal = "success"
@@ -229,7 +232,7 @@ func (kv *KVServer) executeLogs() {
 				delete(kv.logStates, key)
 				//kv.logStates.Delete(key)
 				//targetVal = "success"
-				kv.logStates[requestId] = "success"
+				//kv.logStates[requestId] = "r"
 				//kv.logStates.Store(requestId, "success")
 				MyPrintf(Info, kv.me, "Remove request success requestId=%v, key=%v, value=%v, index=%v", requestId, key, msg.CommandIndex)
 			default:
@@ -240,7 +243,7 @@ func (kv *KVServer) executeLogs() {
 		}
 		// 说实话, 这里用子进程去做更好, 快照阻塞服务可不是什么理想的事情, 不过是个case就算了.
 		size := kv.persister.RaftStateSize()
-		if kv.maxraftstate != -1 && size >= kv.maxraftstate-BUFFER_SIZE {
+		if kv.maxraftstate != -1 && size >= kv.maxraftstate {
 			snapshotNode := SnapshotNode{
 				Database:  kv.database,
 				LogStates: kv.logStates,
@@ -249,11 +252,8 @@ func (kv *KVServer) executeLogs() {
 			e := labgob.NewEncoder(w)
 			e.Encode(snapshotNode)
 			bytes := w.Bytes()
-			MyPrintf(Info, kv.me, "try kv.rf.Snapshot: msgIndex=%v", msg.CommandIndex)
 			kv.rf.Snapshot(msg.CommandIndex, bytes)
-			MyPrintf(Info, kv.me, "kv.rf.Snapshot success: msgIndex=%v", msg.CommandIndex)
 		}
-		MyPrintf(Info, kv.me, "msg out lock: msgIndex=%v", msg.CommandIndex)
 		kv.mu.Unlock()
 	}
 }

@@ -7,9 +7,9 @@ import (
 )
 
 // Debugging
-const IsNotDebug = 1
-const nowLogLevel = SLock
-const PrintLock = 1
+const IsNotDebug = 0
+const nowLogLevel = Info
+const PrintLock = 0
 
 type LogLevel int
 

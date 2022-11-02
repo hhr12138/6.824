@@ -31,9 +31,10 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	var num int64 = 0
 	ck.requestCnt = &num
 	//ns级时间戳+10000以内的random来降低概率吧, 正常来说应该调用时指定的
-	nanosecond := time.Now().Nanosecond()
-	randNum := nrand()
-	ck.me = strconv.Itoa(nanosecond) + strconv.FormatInt(randNum, 10)
+	//nanosecond := time.Now().Nanosecond()
+	//randNum := nrand()
+	//ck.me = strconv.Itoa(nanosecond) + strconv.FormatInt(randNum, 10)
+	ck.me = strconv.FormatInt(nrand(), 10)
 	// You'll have to add code here.
 	return ck
 }
@@ -79,6 +80,8 @@ func (ck *Clerk) Get(key string) string {
 			break
 		} else if reply.Code == REPEAT_REQUEST {
 			ClientPrintf(Warn, ck.me, "send a repeated get request: reqeustId=%v", requestId)
+		} else if reply.Code == IsNotDebug {
+			ClientPrintf(Warn, ck.me, "is not leader")
 		}
 		reqeustCnt++
 		idx = (idx + 1) % serverCnt
@@ -124,6 +127,8 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			break
 		} else if reply.Code == REPEAT_REQUEST { //重复了的putAppend请求, 可能会打印多次...到时候看看是否需要修改下
 			ClientPrintf(Warn, ck.me, "send a repeated putAppend request: reqeustId= %v", requestId)
+		} else if reply.Code == IsNotDebug {
+			ClientPrintf(Warn, ck.me, "is not leader")
 		}
 		reqeustCnt++
 		idx = (idx + 1) % serverCnt
