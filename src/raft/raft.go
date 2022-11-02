@@ -94,11 +94,10 @@ type Raft struct {
 	MatchIndex  []int         //已经同步到follower的日志
 	applyCh     chan ApplyMsg // 返回给tester告诉他该消息以提交
 	//appendEntriesCh chan []string //发送给leader的AppendEntries, 用来从里面取东西更新ld的log[]
-	logStates           map[string]LogState //记录每个log的状态, id->状态, NOT_FIND: 未到, COMMITTED: 已提交(已删除但没物理删除的也按照已提交算吧, 毕竟不重复执行就行, 按原本返回即可), WORKING: 执行中
-	voteTimeout         int64               //选举超时
-	rwMu                sync.RWMutex        //读写锁
-	beforeSnapshotTerm  int                 //上次快照的任期, 用来接受日志时的判断
-	beforeSnapshotIndex int                 //上次快照的下标
+	voteTimeout         int64        //选举超时
+	rwMu                sync.RWMutex //读写锁
+	beforeSnapshotTerm  int          //上次快照的任期, 用来接受日志时的判断
+	beforeSnapshotIndex int          //上次快照的下标
 }
 
 //快照对象, 任期, 下标, 以及这些快照执行后的内容
@@ -140,21 +139,21 @@ func (rf *Raft) termAndIdentityCheck(identity, term, nowTerm, index int) bool {
 	return true
 }
 
+//获取最后一个日志的index
+func (rf *Raft) getLastLogIndex() int {
+	logSize := len(rf.state.Logs)
+	if logSize == 0 {
+		return rf.beforeSnapshotIndex
+	}
+	return rf.state.Logs[logSize-1].Index
+}
+
 // term 选举发起时的任期
 func (rf *Raft) StartVote(term, index int, endTime int64, lastLog *Log) {
-	end := make(chan bool)
 	box := make(chan bool)
 	success := 1
 	fail := 0
-	nowTime := NowMillSecond()
 	//固定选举超时
-	go func() {
-		time.Sleep(GetMillSecond(endTime - nowTime))
-		select {
-		case end <- true:
-		default:
-		}
-	}()
 	for i := 0; i < len(rf.peers); i++ {
 		//idx := i
 		if i == rf.me {
@@ -169,102 +168,69 @@ func (rf *Raft) StartVote(term, index int, endTime int64, lastLog *Log) {
 				CandidateId:  rf.me,
 			}
 			reply := &RequestVoteReply{}
-			ok := false
-			for idx := 0; idx < VOTE_REPLACE_CNT; idx++ {
-				//MyPrintf(rf.me, term, index, "[StartVote] start call %v", idx)
-				//RPC超时就不停重试
-				ok = peer.Call("Raft.RequestVote", args, reply)
-				//if !ok {
-				//	MyPrintf(rf.me, term, index, "[StartVote] call %v rpc timeout", idx)
-				//} else {
-				//	MyPrintf(rf.me, term, index, "[StartVote] call %v success", idx)
-				//}
-				if ok {
-					//必须用这种写法, 不然携程会阻塞导致积压一堆
-					select {
-					case box <- reply.Success:
-					default:
-					}
-					break
-				}
+			ok := peer.Call("Raft.RequestVote", args, reply)
+			if ok {
+				box <- reply.Success
+			} else {
+				MyPrintf(Error, rf.me, term, index, "call %v time out", i)
+				box <- false
 			}
 		}()
 	}
 	for {
-		select {
-		case <-end:
-			//MyPrintf(Warn, rf.me, term, index, "[StartVote] vote timeout, shutdown vote")
-			return
-		case ok := <-box:
-			//这部分可有可无, 有了的优点是可以不用等选举超时, 无了的有点是减小串行度(虽然帮助不大吧), 暂时去了吧
-			//rf.rwMu.RLock()
-			//nowTerm := rf.state.CurrentTerm
-			//identity := rf.state.Identity
-			//rf.rwMu.RUnlock()
-			//if !rf.termAndIdentityCheck(identity,term,nowTerm,index){
-			//	return
-			//}
-			if ok {
-				success++
-				//收到了大部分投票
-				if success*2 > len(rf.peers) {
-					rf.rwMu.Lock()
-					MyPrintf(Lock, rf.me, -1, -1, "StartVote in lock")
-					//真实变更时需要进行二次检测
-					nowTerm := rf.state.CurrentTerm
-					identity := rf.Identity
-					// "在一个任期内，如果收到大多数服务器投票，candidate就赢得了选举。"
-					//如果任期改变了, 那么这次选举失效
-					if !rf.termAndIdentityCheck(identity, term, nowTerm, index) {
-						MyPrintf(Lock, rf.me, -1, -1, "StartVote out lock")
-						rf.rwMu.Unlock()
-						return
-					}
-					//commitIndex := rf.state.CommitIndex
-					nextIndex := rf.beforeSnapshotIndex + 1
-					if len(rf.state.Logs)-1 >= 0 {
-						nextIndex = rf.state.Logs[len(rf.state.Logs)-1].Index + 1
-					}
-					nextIndexs := make([]int, len(rf.peers))
-					for i := 0; i < len(nextIndexs); i++ {
-						nextIndexs[i] = nextIndex
-					}
-					matchIndex := make([]int, len(rf.peers))
-					for i := 0; i < len(matchIndex); i++ {
-						//这里本来是更新成rf.state.CommitIndex的, 但有这种情况
-						//5个集群, 死了俩
-						//3个不停更新commitIndex->极大的数, 然后重新选主把5个的MatchIndex全部更新了
-						//然后死了的俩活了, 之后给了他们错误的leaderCommit, 然后G了
-						matchIndex[i] = -1
-					}
-					states := rf.initLogStates()
-					rf.logStates = states
-					rf.MatchIndex = matchIndex
-					rf.NextIndex = nextIndexs
-					rf.Identity = 0
-					MyPrintf(Info, rf.me, term, index, "[StartVote] vote success")
-					MyPrintf(Lock, rf.me, -1, -1, "StartVote out lock")
-					rf.rwMu.Unlock()
-					//todo: 明天重新写下
-					go rf.commit()
-					for i := 0; i < len(rf.peers); i++ {
-						if i == rf.me {
-							continue
-						}
-						go rf.sendHeart(i)
-						MyPrintf(Info, rf.me, term, index, "[StartVote] start send log to %v", i)
-						go rf.sendLog(i)
-					}
-					return
-				}
-			} else {
-				fail++
-				if fail*2 >= len(rf.peers) {
-					MyPrintf(Warn, rf.me, term, index, "[StartVote] vote fail")
-					return
-				}
+		ok := <-box
+		if ok {
+			success++
+			if success*2 > len(rf.peers) {
+				break
+			}
+		} else {
+			fail++
+			if fail*2 > len(rf.peers) {
+				MyPrintf(Info, rf.me, term, index, "vote fail")
+				return
 			}
 		}
+	}
+	// "在一个任期内，如果收到大多数服务器投票，candidate就赢得了选举。"
+	nextIndex := rf.getLastLogIndex() + 1
+	nextIndexs := make([]int, len(rf.peers))
+	for i := 0; i < len(nextIndexs); i++ {
+		nextIndexs[i] = nextIndex
+	}
+	matchIndex := make([]int, len(rf.peers))
+	for i := 0; i < len(matchIndex); i++ {
+		//这里本来是更新成rf.state.CommitIndex的, 但有这种情况
+		//5个集群, 死了俩
+		//3个不停更新commitIndex->极大的数, 然后重新选主把5个的MatchIndex全部更新了
+		//然后死了的俩活了, 之后给了他们错误的leaderCommit, 然后G了
+		matchIndex[i] = -1
+	}
+	rf.rwMu.Lock()
+	defer func() {
+		MyPrintf(Lock, rf.me, -1, -1, "StartVote out lock")
+		rf.rwMu.Unlock()
+	}()
+	//真实变更时需要进行二次检测
+	nowTerm := rf.state.CurrentTerm
+	identity := rf.Identity
+	//如果任期改变了, 那么这次选举失效
+	if !rf.termAndIdentityCheck(identity, term, nowTerm, index) {
+		return
+	}
+	rf.MatchIndex = matchIndex
+	rf.NextIndex = nextIndexs
+	rf.Identity = 0
+	MyPrintf(Info, rf.me, term, index, "[StartVote] vote success")
+	//todo: 明天重新写下
+	go rf.commit()
+	for i := 0; i < len(rf.peers); i++ {
+		if i == rf.me {
+			continue
+		}
+		go rf.sendHeart(i)
+		MyPrintf(Info, rf.me, term, index, "[StartVote] start send log to %v", i)
+		go rf.sendLog(i)
 	}
 }
 
@@ -572,29 +538,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 	rf.state.Logs = append(rf.state.Logs, log)
 	rf.persist()
-	bs := command.([]byte)
-	MyPrintf(Info, rf.me, term, index, "[start] append new log, entries=%v", string(bs))
-	return index, term, true
-}
-
-//lab3
-func (rf *Raft) initLogStates() map[string]LogState {
-	resp := make(map[string]LogState)
-	logs := rf.state.Logs
-	for _, log := range logs {
-		entry, ok := log.Entries.(LogCommand)
-		if !ok {
-			continue
-		}
-		var s LogState
-		if log.Index < rf.CommitIndex {
-			s = COMMITTED
-		} else {
-			s = WORKING
-		}
-		resp[entry.RequestId] = s
+	bs, ok := command.([]byte)
+	if ok {
+		MyPrintf(Info, rf.me, term, index, "[start] append new log, entries=%v", string(bs))
 	}
-	return resp
+	return index, term, true
 }
 
 func (rf *Raft) sendLog(followerIdx int) {
