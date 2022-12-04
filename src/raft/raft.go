@@ -640,7 +640,6 @@ func (rf *Raft) sendLog(followerIdx int) {
 			reply := &SnapshotReply{}
 			ok := peer.Call("Raft.SnapshotForLeader", arg, reply)
 			if !ok {
-				time.Sleep(SLEEP_TIME * time.Millisecond)
 				continue
 			}
 			MyPrintf(Info, rf.me, term, index, "send snapshot finish")
@@ -668,12 +667,7 @@ func (rf *Raft) sendLog(followerIdx int) {
 			rf.NextIndex[followerIdx] = reply.NextIndex
 			MyPrintf(Lock, rf.me, -1, -1, "sendLog out lock")
 			rf.rwMu.Unlock()
-			time.Sleep(SLEEP_TIME * time.Millisecond)
 			continue
-		}
-		//理论上不可能
-		if nextIndex == 0 {
-			panic("err : [sendLog] nextIndex == 0")
 		}
 		if nextIndex > index {
 			//MyPrintf(Lock, rf.me, -1, -1, "sendLog out ReadLock")
@@ -751,6 +745,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	currentTerm, _ := rf.GetState()
 	currentIndex := rf.getLastIndex()
 	preLogTerm := rf.beforeSnapshotTerm
+	fmt.Printf("get a append entries, preLogIndex=%v,currentIndex=%v\n", args.PrevLogIndex, currentIndex)
 	if currentIndex >= args.PrevLogIndex {
 		idx := rf.binaryFindLogIdxByIndex(args.PrevLogIndex)
 		if idx >= 0 {
@@ -1187,13 +1182,17 @@ func (rf *Raft) SendAppendEntries(followerIdx, term, index, leaderCommit, nextIn
 
 //leader传递快照
 func (rf *Raft) SnapshotForLeader(args *SnapshotArgs, reply *SnapshotReply) {
-	MyPrintf(Error, rf.me, -1, -1, "SnapshotForLeader")
+	MyPrintf(Error, rf.me, -1, -1, "SnapshotForLeader lastIncludedIndex = %v", args.LastIncludedIndex)
 	rf.rwMu.Lock()
-	MyPrintf(Lock, rf.me, -1, -1, "SnapshotForLeader in lock")
+	//MyPrintf(Lock, rf.me, -1, -1, "SnapshotForLeader in lock")
 	defer func() {
-		MyPrintf(Lock, rf.me, -1, -1, "SnapshotForLeader out lock")
+		//MyPrintf(Lock, rf.me, -1, -1, "SnapshotForLeader out lock")
 		rf.rwMu.Unlock()
 	}()
+	if rf.beforeSnapshotIndex >= args.LastIncludedIndex {
+		MyPrintf(Error, rf.me, -1, -1, "leader snapshot log too old")
+		return
+	}
 	currentTerm := rf.state.CurrentTerm
 	term := args.Term
 	//当前任期更新, 回复这次请求
@@ -1216,10 +1215,11 @@ func (rf *Raft) SnapshotForLeader(args *SnapshotArgs, reply *SnapshotReply) {
 	rf.beforeSnapshotIndex = args.LastIncludedIndex
 	rf.beforeSnapshotTerm = args.LastIncludedTerm
 	stateBytes := rf.getStateBytes()
-	reply.NextIndex = args.LastIncludedIndex + 1
-	if len(rf.state.Logs) > 0 {
-		reply.NextIndex = rf.state.Logs[len(rf.state.Logs)-1].Index + 1
-	}
+	reply.NextIndex = rf.getLastIndex() + 1
+	//reply.NextIndex = args.LastIncludedIndex + 1
+	//if len(rf.state.Logs) > 0 {
+	//	reply.NextIndex = rf.state.Logs[len(rf.state.Logs)-1].Index + 1
+	//}
 	rf.persister.SaveStateAndSnapshot(stateBytes, args.Data)
 }
 

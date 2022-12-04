@@ -4,7 +4,7 @@ const (
 	HEART_TIME               = 160 //ms
 	TIMEOUT_CNT              = 5   //超时次数
 	BUFFER_SIZE              = 100 //缓冲AppendEntries数目
-	SLEEP_TIME               = 10  //没新AppendEntries时短暂睡眠会, ms
+	SLEEP_TIME               = 1   //没新AppendEntries时短暂睡眠会, ms
 	VOTE_REPLACE_CNT         = 1   //选举超时最大重试次数
 	SEND_LOG_CNT             = 50  //一次RPC发送的最大日志数目
 	SEND_SNAPSHOT_SLEEP_TIME = 200
