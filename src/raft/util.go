@@ -7,8 +7,8 @@ import (
 )
 
 // Debugging
-const IsNotDebug = 0
-const nowLogLevel = Info
+const IsNotDebug = 1
+const nowLogLevel = Error
 const PrintLock = 0
 
 type LogLevel int

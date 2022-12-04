@@ -573,7 +573,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.state.Logs = append(rf.state.Logs, log)
 	rf.persist()
 	bs := command.([]byte)
-	MyPrintf(Info, rf.me, term, index, "[start] append new log, entries=%v", string(bs))
+	MyPrintf(Error, rf.me, term, index, "[start] append new log, entries=%v", string(bs))
 	return index, term, true
 }
 
@@ -618,7 +618,7 @@ func (rf *Raft) sendLog(followerIdx int) {
 			//MyPrintf(Lock, rf.me, -1, -1, "sendLog out ReadLock")
 			rf.rwMu.RUnlock()
 			MyPrintf(Info, rf.me, term, index, "[sendLog] leader doing init")
-			time.Sleep(time.Millisecond * time.Duration(SLEEP_TIME))
+			time.Sleep(time.Millisecond * SLEEP_TIME)
 			continue
 		}
 		nextIndex := rf.NextIndex[followerIdx]
@@ -640,7 +640,7 @@ func (rf *Raft) sendLog(followerIdx int) {
 			reply := &SnapshotReply{}
 			ok := peer.Call("Raft.SnapshotForLeader", arg, reply)
 			if !ok {
-				time.Sleep(SEND_SNAPSHOT_SLEEP_TIME * time.Millisecond)
+				time.Sleep(SLEEP_TIME * time.Millisecond)
 				continue
 			}
 			MyPrintf(Info, rf.me, term, index, "send snapshot finish")
@@ -668,7 +668,7 @@ func (rf *Raft) sendLog(followerIdx int) {
 			rf.NextIndex[followerIdx] = reply.NextIndex
 			MyPrintf(Lock, rf.me, -1, -1, "sendLog out lock")
 			rf.rwMu.Unlock()
-			time.Sleep(SEND_SNAPSHOT_SLEEP_TIME * time.Millisecond)
+			time.Sleep(SLEEP_TIME * time.Millisecond)
 			continue
 		}
 		//理论上不可能
@@ -709,7 +709,7 @@ func (rf *Raft) sendLog(followerIdx int) {
 
 		sleepTime, _ := rf.SendAppendEntries(followerIdx, term, index, leaderCommit, nextIndex, matchIndex, logs, lastLog)
 		if sleepTime != 0 {
-			time.Sleep(time.Millisecond * time.Duration(sleepTime))
+			time.Sleep(time.Millisecond * 1)
 		}
 	}
 }
@@ -862,7 +862,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	for i := 0; i < len(msgs); i++ {
 		applyMsg := msgs[i]
 		rf.applyCh <- *applyMsg
-		MyPrintf(Info, rf.me, currentTerm, currentIndex, "[commit] apply msg %v, command=%v", applyMsg.CommandIndex, applyMsg.Command)
+		MyPrintf(Error, rf.me, currentTerm, currentIndex, "[appendEntries] apply msg %v, command=%v", applyMsg.CommandIndex, applyMsg.Command)
 		rf.rwMu.Lock()
 		rf.CommitIndex = applyMsg.CommandIndex
 		rf.LastApplied = Max(rf.CommitIndex, rf.LastApplied)
@@ -1002,7 +1002,6 @@ func (rf *Raft) commit() {
 		}
 		msgs := make([]*ApplyMsg, 0, commitLogIndex-start+1)
 		if flag && commitLog.Term == term {
-			MyPrintf(Lock, rf.me, -1, -1, "commit in lock")
 			for i := start; i <= commitLogIndex; i++ {
 				applyMsg := &ApplyMsg{
 					CommandValid: true,
@@ -1033,23 +1032,8 @@ func (rf *Raft) commit() {
 				rf.rwMu.Unlock()
 			}
 		}
-		//if flag{
-		//	rf.rwMu.Lock()
-		//	nowTerm,_ := rf.GetState()
-		//	if nowTerm != term{
-		//		MyPrintf(Warn,rf.me,nowTerm,index,"commit() term change")
-		//		rf.rwMu.Unlock()
-		//		return
-		//	}
-		//	//只有这一个线程会commit, 因此无需进行额外判断
-		//	rf.CommitIndex = commitLog.Index
-		//	if rf.CommitIndex > rf.LastApplied {
-		//		rf.LastApplied = rf.CommitIndex
-		//	}
-		//	rf.rwMu.Unlock()
-		//}
 		MyPrintf(Lock, rf.me, -1, -1, "commit out lock")
-		time.Sleep(time.Millisecond * HEART_TIME)
+		time.Sleep(time.Millisecond * 1)
 	}
 }
 
@@ -1206,6 +1190,7 @@ func (rf *Raft) SendAppendEntries(followerIdx, term, index, leaderCommit, nextIn
 
 //leader传递快照
 func (rf *Raft) SnapshotForLeader(args *SnapshotArgs, reply *SnapshotReply) {
+	MyPrintf(Error, rf.me, -1, -1, "SnapshotForLeader")
 	rf.rwMu.Lock()
 	MyPrintf(Lock, rf.me, -1, -1, "SnapshotForLeader in lock")
 	defer func() {

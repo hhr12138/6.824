@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"math/big"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 )
 
 type Clerk struct {
+	mu         sync.Mutex
+	mp         map[string]bool
 	servers    []*labrpc.ClientEnd
 	leader     int64 //当前client认为的leader
 	me         string
@@ -30,6 +33,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck.servers = servers
 	var num int64 = 0
 	ck.requestCnt = &num
+	ck.mp = make(map[string]bool)
 	//ns级时间戳+10000以内的random来降低概率吧, 正常来说应该调用时指定的
 	//nanosecond := time.Now().Nanosecond()
 	//randNum := nrand()
@@ -53,7 +57,14 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 //
 
 func (ck *Clerk) getRequestId() string {
-	requestId := fmt.Sprintf("%v:%v", ck.me, atomic.AddInt64(ck.requestCnt, 1))
+	addInt64 := atomic.AddInt64(ck.requestCnt, 1)
+	requestId := fmt.Sprintf("%v:%v", ck.me, addInt64)
+	ck.mu.Lock()
+	if ck.mp[requestId] {
+		panic("has requestId")
+	}
+	ck.mp[requestId] = true
+	ck.mu.Unlock()
 	return requestId
 }
 
@@ -179,5 +190,5 @@ func (ck *Clerk) Remove(removeRequestId string) {
 		}
 		time.Sleep(CLIENT_SLEEP_TIME * time.Millisecond)
 	}
-	ClientPrintf(Info, ck.me, "finish a remove request: requestId=%v", requestId)
+	ClientPrintf(TIME, ck.me, "finish a remove request: requestId=%v", requestId)
 }

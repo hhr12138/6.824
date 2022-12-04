@@ -7,8 +7,8 @@ const (
 )
 
 const (
-	CLIENT_SLEEP_TIME            = 20
-	WAIT_CHANNEL_RESP_SLEEP_TIME = 50 //ms
+	CLIENT_SLEEP_TIME            = 1
+	WAIT_CHANNEL_RESP_SLEEP_TIME = 2  //ms
 	BUFFER_SIZE                  = 50 //byte, 看case maxraftstate 也就1000
 )
 

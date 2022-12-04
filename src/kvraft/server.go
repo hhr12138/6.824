@@ -93,11 +93,11 @@ type KVServer struct {
 }
 
 func (kv *KVServer) sendRequest(common *raft.LogCommand) (Code, string, string) {
-	//startTime := time.Now().UnixNano()
-	//defer func() {
-	//	endTime := time.Now().UnixNano()
-	//	MyPrintf(TIME, kv.me,"sendReuqest use %v mill",(endTime-startTime)/1000000)
-	//}()
+	startTime := time.Now().UnixNano()
+	defer func() {
+		endTime := time.Now().UnixNano()
+		MyPrintf(TIME, kv.me, "sendReuqest use %v mill", (endTime-startTime)/1000000)
+	}()
 	marshal, _ := json.Marshal(common)
 	//start成功后raft立即开始执行, 如果在raft执行完成并返回结构后commandToResp都没set就会导致execute方法空指针, 因此commandToResp也可以换成普通map了
 	requestId := common.RequestId
@@ -115,9 +115,10 @@ func (kv *KVServer) sendRequest(common *raft.LogCommand) (Code, string, string) 
 		kv.mu.Lock()
 		cache, exist := kv.logStates[requestId]
 		//cache, exist := kv.logStates.Load(requestId)
-		if common.Ope == "Remove" || exist {
+		if exist {
 			if cache == "r" {
 				delete(kv.logStates, requestId)
+				MyPrintf(Info, kv.me, "delete requestId=%v", requestId)
 			}
 			kv.mu.Unlock()
 			return SUCCESS, cache, ""
@@ -175,15 +176,15 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 func (kv *KVServer) executeLogs() {
 	for {
+		if kv.killed() {
+			MyPrintf(Error, kv.me, "is killed")
+			return
+		}
 		msg := <-kv.applyCh
-		MyPrintf(Info, kv.me, "get a msg: msgIndex=%v", msg.CommandIndex)
+		MyPrintf(TIME, kv.me, "get a msg: msgIndex=%v", msg.CommandIndex)
 		kv.mu.Lock()
-		MyPrintf(Info, kv.me, "msg into lock: msgIndex=%v", msg.CommandIndex)
-		//if kv.killed() {
-		//	MyPrintf(Error, kv.me, "is killed")
-		//	kv.mu.Unlock()
-		//	return
-		//}
+		MyPrintf(TIME, kv.me, "msg into lock: msgIndex=%v", msg.CommandIndex)
+		_, isLeader := kv.rf.GetState()
 		if msg.CommandValid {
 			command := &raft.LogCommand{}
 			bytes, ok := msg.Command.([]byte)
@@ -204,7 +205,7 @@ func (kv *KVServer) executeLogs() {
 					//targetVal = value
 					kv.logStates[requestId] = value
 					//kv.logStates.Store(requestId, value)
-					MyPrintf(Info, kv.me, "get request success requestId=%v, key=%v, value=%v, index=%v", requestId, key, value, msg.CommandIndex)
+					MyPrintf(TIME, kv.me, "get request success requestId=%v, key=%v, value=%v, index=%v", requestId, key, value, msg.CommandIndex)
 				}
 			case "Put":
 				if _, exist := kv.logStates[requestId]; !exist {
@@ -214,7 +215,7 @@ func (kv *KVServer) executeLogs() {
 					kv.logStates[requestId] = "s"
 					//kv.logStates.Store(requestId, "success")
 					//targetVal = "success"
-					MyPrintf(Info, kv.me, "Put request success requestId=%v, key=%v, value=%v, index=%v", requestId, key, value, msg.CommandIndex)
+					MyPrintf(TIME, kv.me, "Put request success requestId=%v, key=%v, value=%v, index=%v", requestId, key, value, msg.CommandIndex)
 				}
 			case "Append":
 				if _, exist := kv.logStates[requestId]; !exist {
@@ -224,7 +225,7 @@ func (kv *KVServer) executeLogs() {
 					val += value
 					kv.database[key] = val
 					kv.logStates[requestId] = "s"
-					MyPrintf(Info, kv.me, "Append request success requestId=%v, key=%v, value=%v, index=%v", requestId, key, value, msg.CommandIndex)
+					MyPrintf(TIME, kv.me, "Append request success requestId=%v, key=%v, value=%v, index=%v", requestId, key, value, msg.CommandIndex)
 					//kv.logStates.Store(requestId, "success")
 					//targetVal = "success"
 				}
@@ -232,9 +233,11 @@ func (kv *KVServer) executeLogs() {
 				delete(kv.logStates, key)
 				//kv.logStates.Delete(key)
 				//targetVal = "success"
-				//kv.logStates[requestId] = "r"
+				if isLeader {
+					kv.logStates[requestId] = "r"
+				}
 				//kv.logStates.Store(requestId, "success")
-				MyPrintf(Info, kv.me, "Remove request success requestId=%v, key=%v, value=%v, index=%v", requestId, key, msg.CommandIndex)
+				MyPrintf(TIME, kv.me, "Remove request success requestId=%v, key=%v, value=%v, index=%v", requestId, key, msg.CommandIndex)
 			default:
 				MyPrintf(Critcal, kv.me, "undefined ope")
 				panic("undefined ope")
