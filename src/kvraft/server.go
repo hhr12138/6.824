@@ -93,11 +93,6 @@ type KVServer struct {
 }
 
 func (kv *KVServer) sendRequest(common *raft.LogCommand) (Code, string, string) {
-	startTime := time.Now().UnixNano()
-	defer func() {
-		endTime := time.Now().UnixNano()
-		MyPrintf(TIME, kv.me, "sendReuqest use %v mill", (endTime-startTime)/1000000)
-	}()
 	marshal, _ := json.Marshal(common)
 	//start成功后raft立即开始执行, 如果在raft执行完成并返回结构后commandToResp都没set就会导致execute方法空指针, 因此commandToResp也可以换成普通map了
 	requestId := common.RequestId

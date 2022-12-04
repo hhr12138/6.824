@@ -749,10 +749,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.Id = rf.me
 	//以收到时为准, 因为rf的CurrentTerm可能会被其他携程更新
 	currentTerm, _ := rf.GetState()
-	currentIndex := rf.beforeSnapshotIndex
-	if len(rf.state.Logs)-1 >= 0 {
-		currentIndex = rf.state.Logs[len(rf.state.Logs)-1].Index
-	}
+	currentIndex := rf.getLastIndex()
 	preLogTerm := rf.beforeSnapshotTerm
 	if currentIndex >= args.PrevLogIndex {
 		idx := rf.binaryFindLogIdxByIndex(args.PrevLogIndex)
@@ -862,7 +859,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	for i := 0; i < len(msgs); i++ {
 		applyMsg := msgs[i]
 		rf.applyCh <- *applyMsg
-		MyPrintf(Error, rf.me, currentTerm, currentIndex, "[appendEntries] apply msg %v, command=%v", applyMsg.CommandIndex, applyMsg.Command)
+		MyPrintf(Error, rf.me, currentTerm, currentIndex, "[appendEntries] apply msg %v", applyMsg.CommandIndex)
 		rf.rwMu.Lock()
 		rf.CommitIndex = applyMsg.CommandIndex
 		rf.LastApplied = Max(rf.CommitIndex, rf.LastApplied)
@@ -1016,7 +1013,7 @@ func (rf *Raft) commit() {
 			for i := 0; i < len(msgs); i++ {
 				applyMsg := *msgs[i]
 				rf.applyCh <- applyMsg
-				MyPrintf(Critcal, rf.me, term, commitLog.Index, "[commit] apply msg %v, command=%v", applyMsg.CommandIndex, applyMsg.Command)
+				MyPrintf(Critcal, rf.me, term, commitLog.Index, "[commit] apply msg %v", applyMsg.CommandIndex)
 				rf.rwMu.Lock()
 				nowTerm, _ := rf.GetState()
 				//只有这一个线程会commit, 因此无需进行额外判断
@@ -1226,6 +1223,24 @@ func (rf *Raft) SnapshotForLeader(args *SnapshotArgs, reply *SnapshotReply) {
 	rf.persister.SaveStateAndSnapshot(stateBytes, args.Data)
 }
 
+func (rf *Raft) getLastIndex() int {
+	length := len(rf.state.Logs)
+	index := rf.beforeSnapshotIndex
+	if length > 0 {
+		index = rf.state.Logs[length-1].Index
+	}
+	return index
+}
+
+func (rf *Raft) getLastTerm() int {
+	length := len(rf.state.Logs)
+	term := rf.beforeSnapshotTerm
+	if length > 0 {
+		term = rf.state.Logs[length-1].Term
+	}
+	return term
+}
+
 //本地快照
 func (rf *Raft) Snapshot(targetIdx int, bs []byte) {
 	rf.rwMu.Lock()
@@ -1234,15 +1249,8 @@ func (rf *Raft) Snapshot(targetIdx int, bs []byte) {
 		rf.rwMu.Unlock()
 		MyPrintf(Lock, rf.me, -1, -1, "Snapshot out lock")
 	}()
-	length := len(rf.state.Logs)
 	term := rf.state.CurrentTerm
-	index := rf.state.Logs[length-1].Index
-	//beforeSnapshotBytes := rf.persister.ReadSnapshot()
-	//beforeSnapshot := &Snapshot{}
-	//err := json.Unmarshal(beforeSnapshotBytes, beforeSnapshot)
-	//if err != nil{
-	//	MyPrintf(Critcal,rf.me,term,index,"unmarshal error: %v",err.Error())
-	//}
+	index := rf.getLastIndex()
 	beforeSnapshotIndex := rf.beforeSnapshotIndex
 	//当前快照更加新, 这种情况可能发生在leader的同步和自身同步并发出现的情况下, 此时什么也不做
 	if targetIdx <= beforeSnapshotIndex {
@@ -1252,6 +1260,7 @@ func (rf *Raft) Snapshot(targetIdx int, bs []byte) {
 	//不能直接用targetIdx来当作下标, 因为此时切片的idx和日志的不再一一对于了
 	targetTerm := 0
 	newLogs := make([]*Log, 0)
+	length := len(rf.state.Logs)
 	//下面这个for可以优化成二分查找
 	for i := 0; i < length; i++ {
 		log := rf.state.Logs[i]
